@@ -20,7 +20,7 @@ def salt_bridge_contact_map(ref, trj):
     j = len(u.trajectory) #time
 
     contact_map = np.zeros((i,j))
-    contact_map_names =  np.chararray((i),itemsize=15)
+    contact_map_names =  np.chararray((i),itemsize=25)
 
     for ts in u.trajectory:
         n = 0
