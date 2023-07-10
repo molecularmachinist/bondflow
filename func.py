@@ -30,7 +30,7 @@ def salt_bridge_contact_map(ref, trj):
                 n += 1
                 if ts.frame == 0:
                     
-                    contact_map_names[n-1] = str(pos_res.name) + '_' + str(pos_res.resname) + str(int(pos_res.resid)) + '_' + str(neg_res.name) + '_' + str(neg_res.resname) + str(int(neg_res.resid))
+                    contact_map_names[n-1] = str(pos_res.resname) + str(int(pos_res.resid)) + '_' + '_' + str(neg_res.resname) + str(int(neg_res.resid))
                 
                 dist = contacts.distance_array(pos_res.position, neg_res.position)
                 if dist <= 6.0:
@@ -71,11 +71,15 @@ def sb_time_dependence(contact_map, contact_map_names, indices):
 
     for n in range(len(indices)):
         index_i = indices[n]
-        time_dependence = contact_map[index_i,:]
-        data.append(list(time_dependence))
+
         sb_name = contact_map_names[index_i]
         sb_name = sb_name.decode("UTF-8")
-        sb_names.append(sb_name)
+        
+        if sb_name not in sb_names:
+            sb_names.append(sb_name)
+            
+            time_dependence = contact_map[index_i,:]
+            data.append(list(time_dependence))
 
     data = np.array(data)
 
