@@ -11,6 +11,8 @@ print('Contact map made')
 
 distance_df, sb_names_list = ba.create_sorted_distance_dataframe(contact_map_names, binary_contact_map, distance_map)
 
+distance_df.to_csv('distance_data.csv', index=False)
+
 contact_map, contact_map_names = ba.create_contact_map_from_dataframe(distance_df)
 
 with open('contact_map.npy', 'wb') as f:
