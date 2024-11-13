@@ -1,7 +1,10 @@
-import numpy as np
+#Improved functions
+
 import MDAnalysis as mda
+import numpy as np
 from MDAnalysis.analysis import contacts
-import pandas as pd 
+import pandas as pd
+
 
 
 def salt_bridge_contact_map(ref, trj):
@@ -9,7 +12,11 @@ def salt_bridge_contact_map(ref, trj):
     u = mda.Universe(ref, trj)
 
     # Collect all positive and negative residues 
-    positive_residues = u.select_atoms("((resname ARG and name CZ) or (resname LYS and name CE))")
+    #positive_residues = u.select_atoms("(resname LYS ARG) and (name NZ NH*)")
+    #negative_residues = u.select_atoms("(resname ASP GLU) and (name OE* OD*)")
+    #positive_residues = u.select_atoms("((resname ARG and name CZ) or (resname LYS and name CE))")
+    #negative_residues = u.select_atoms("((resname ASP and name CG) or (resname GLU and name CD))")
+    positive_residues = u.select_atoms("(resname ARG and name CZ) or (resname LYS and name CE)")
     negative_residues = u.select_atoms("((resname ASP and name CG) or (resname GLU and name CD))")
 
     num_pos_residues = len(positive_residues)
@@ -41,42 +48,9 @@ def salt_bridge_contact_map(ref, trj):
         distance_map[:, ts.frame] = dist_matrix.flatten()
 
         # Update binary contact map based on distance threshold
-        binary_contact_map[:, ts.frame] = (dist_matrix.flatten() <= 6.0).astype(np.int8)
+        binary_contact_map[:, ts.frame] = (dist_matrix.flatten() <= 5).astype(np.int8)
 
     return binary_contact_map, distance_map, contact_map_names
-
-
-    
-
-def create_sorted_distance_dataframe(contact_map_names, contact_map, distance_map):
-
-
-    # Calculate standard deviation of the binary contact map
-    std_contact_map = np.std(contact_map, axis=1)
-
-    # Get indices of non-zero standard deviations
-    indices = np.flatnonzero(std_contact_map)
-    stds = std_contact_map[indices]
-
-    # Extract names and standard deviations
-    sb_names = contact_map_names[indices].astype(str)
-
-    # Create DataFrame and sort by standard deviation
-    data = {'Salt bridge': sb_names, 'Standard deviation': stds, 'Index': indices}
-    df_std = pd.DataFrame(data)
-    df_std_sorted = df_std.sort_values(by='Standard deviation', ascending=False)
-
-    # Extract the sorted indices
-    sorted_indices = df_std_sorted['Index'].values
-
-    # Extract and transpose the relevant distances
-    dist = distance_map[sorted_indices].T
-
-    # Create the final DataFrame with distances
-    distance_data_frame = pd.DataFrame(dist, columns=df_std_sorted['Salt bridge'])
-
-    return distance_data_frame, df_std_sorted['Salt bridge'].tolist(), df_std_sorted
-
 
 
 
@@ -136,7 +110,38 @@ def moving_average_contact_map_maker(binary_contact_map,ma_window):
 
     return ma_binary_contact_map
 
-        
+
+
+def create_sorted_distance_dataframe(contact_map_names, contact_map, distance_map):
+
+
+    # Calculate standard deviation of the binary contact map
+    std_contact_map = np.std(contact_map, axis=1)
+
+    # Get indices of non-zero standard deviations
+    indices = np.flatnonzero(std_contact_map)
+    stds = std_contact_map[indices]
+
+    # Extract names and standard deviations
+    sb_names = contact_map_names[indices].astype(str)
+
+    # Create DataFrame and sort by standard deviation
+    data = {'Salt bridge': sb_names, 'Standard deviation': stds, 'Index': indices}
+    df_std = pd.DataFrame(data)
+    df_std_sorted = df_std.sort_values(by='Standard deviation', ascending=False)
+
+    # Extract the sorted indices
+    sorted_indices = df_std_sorted['Index'].values
+
+    # Extract and transpose the relevant distances
+    dist = distance_map[sorted_indices].T
+
+    # Create the final DataFrame with distances
+    distance_data_frame = pd.DataFrame(dist, columns=df_std_sorted['Salt bridge'])
+
+    return distance_data_frame, df_std_sorted['Salt bridge'].tolist(), df_std_sorted
+
+
 
 def create_contact_map_from_dataframe(df):
 
@@ -144,6 +149,6 @@ def create_contact_map_from_dataframe(df):
     cols_list = df.columns.tolist()
 
     return contact_map, cols_list
-    
-      
-  
+
+
+
