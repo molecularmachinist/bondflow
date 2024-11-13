@@ -89,7 +89,7 @@ def create_sorted_distance_dataframe(contact_map_names, binary_contact_map, dist
 
     distance_data_frame = pd.DataFrame(dist, columns= sb_names)
     
-    return distance_data_frame, sb_names
+    return distance_data_frame, sb_names, df_std_sorted
 
 
 
