@@ -150,5 +150,116 @@ def create_contact_map_from_dataframe(df):
 
     return contact_map, cols_list
 
+import os
+import numpy as np
+import MDAnalysis as mda
+from tqdm import tqdm
+from itertools import combinations
+from joblib import Parallel, delayed
+
+
+# ---------- Utility Functions ---------- #
+
+def compute_batch_distances_vectorized(coords, batch_pairs):
+    """Compute pairwise distances for a batch of residue pairs across all frames."""
+    i_indices = np.array([i for i, _ in batch_pairs])
+    j_indices = np.array([j for _, j in batch_pairs])
+    diff = coords[:, i_indices, :] - coords[:, j_indices, :]
+    return np.linalg.norm(diff, axis=-1)  # (n_frames, n_pairs)
+
+
+def filter_by_contact(batch_distances, batch_pairs, contact_threshold=8.0):
+    """Keep residue pairs with min distance <= threshold."""
+    min_distances = np.min(batch_distances, axis=0)
+    return [pair for pair, keep in zip(batch_pairs, min_distances <= contact_threshold) if keep]
+
+
+def filter_by_variance(batch_distances, batch_pairs, variance_percentile=75):
+    """Keep residue pairs above the given variance percentile."""
+    min_d = np.min(batch_distances, axis=0)
+    max_d = np.max(batch_distances, axis=0)
+    
+    normalized = (batch_distances - min_d) / (max_d - min_d + 1e-8)
+    variances = np.var(normalized, axis=0)
+    
+    threshold = np.percentile(variances, variance_percentile)
+    return [pair for pair, keep in zip(batch_pairs, variances >= threshold) if keep]
+
+
+def parallel_batch_filtering(coords, pairs, filter_func, batch_size, desc, n_jobs=-1, **kwargs):
+    """Generic parallel batching for any filter function."""
+    n_batches = (len(pairs) + batch_size - 1) // batch_size
+
+    def process_batch(batch_idx):
+        start, end = batch_idx * batch_size, min((batch_idx + 1) * batch_size, len(pairs))
+        batch_pairs = pairs[start:end]
+        batch_distances = compute_batch_distances_vectorized(coords, batch_pairs)
+        return filter_func(batch_distances, batch_pairs, **kwargs)
+
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(process_batch)(batch) for batch in tqdm(range(n_batches), desc=desc)
+    )
+    return [pair for sublist in results for pair in sublist]
+
+
+# ---------- Main Processing ---------- #
+
+def compute_com_contacts(trajs, ref, batch_size=100, stride=1, 
+                         contact_threshold=8.0, variance_percentile=75, n_jobs=-1):
+    """
+    Compute COM residue contact pairs from multiple trajectories.
+    
+    Returns:
+        current_pairs: filtered residue pairs
+        com_coords: concatenated COM coordinates
+    """
+    com_coords_list = []
+
+    for traj in trajs:
+        model = mda.Universe(ref, traj)
+        
+        heavy = model.select_atoms(
+            "protein and not type H and resindex 2321 to 3004 3047 to 3174 1554 to 1900 654 to 1403"
+        )
+        n_frames = len(model.trajectory[::stride])
+        n_heavy_residues = heavy.residues.n_residues
+        
+        com_coords = np.zeros((n_frames, n_heavy_residues, 3))
+        
+        for idx, frame in enumerate(model.trajectory[::stride]):
+            com_coords[idx] = heavy.residues.center_of_mass(compound='residues')
+            print(f"Frame {idx}/{n_frames} from {os.path.basename(traj)}", end="\r")
+
+        com_coords_list.append(com_coords)
+
+    com_coords = np.concatenate(com_coords_list, axis=0)
+
+    # Generate all residue pairs
+    n_residues = com_coords.shape[1]
+    all_pairs = list(combinations(range(n_residues), 2))
+    print(f"Total possible residue pairs: {len(all_pairs)}")
+
+    # Stage 1: Contact Filter
+    current_pairs = parallel_batch_filtering(
+        coords=com_coords, pairs=all_pairs,
+        filter_func=filter_by_contact,
+        batch_size=batch_size, desc="Stage 1: Contact Filter",
+        n_jobs=n_jobs, contact_threshold=contact_threshold
+    )
+    print(f"Pairs after contact filter: {len(current_pairs)}")
+
+    # Stage 2: Variance Filter
+    current_pairs = parallel_batch_filtering(
+        coords=com_coords, pairs=current_pairs,
+        filter_func=filter_by_variance,
+        batch_size=batch_size, desc="Stage 2: Variance Filter",
+        n_jobs=n_jobs, variance_percentile=variance_percentile
+    )
+    print(f"Pairs after variance filter: {len(current_pairs)}")
+
+    return current_pairs, com_coords
+
+
+
 
 
