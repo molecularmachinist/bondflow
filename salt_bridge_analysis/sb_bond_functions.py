@@ -185,6 +185,11 @@ def filter_by_variance(batch_distances, batch_pairs, variance_percentile=75):
     threshold = np.percentile(variances, variance_percentile)
     return [pair for pair, keep in zip(batch_pairs, variances >= threshold) if keep]
 
+def get_discarded_pairs(all_pairs, kept_pairs):
+    """Return pairs that were not kept."""
+    kept_set = set(kept_pairs)
+    return [pair for pair in all_pairs if pair not in kept_set]
+
 
 def parallel_batch_filtering(coords, pairs, filter_func, batch_size, desc, n_jobs=-1, **kwargs):
     """Generic parallel batching for any filter function."""
@@ -247,6 +252,9 @@ def compute_com_contacts(trajs, ref, selection="protein and not type H",batch_si
     print(f"Pairs after contact filter: {len(current_pairs)}")
 
     # Stage 2: Variance Filter
+
+    com_contact_pairs = current_pairs
+
     current_pairs = parallel_batch_filtering(
         coords=com_coords, pairs=current_pairs,
         filter_func=filter_by_variance,
@@ -255,79 +263,131 @@ def compute_com_contacts(trajs, ref, selection="protein and not type H",batch_si
     )
     print(f"Pairs after variance filter: {len(current_pairs)}")
 
-    return current_pairs, com_coords
+    # Step 3: Find discarded pairs for side chain analysis
+    discarded_pairs = get_discarded_pairs(com_contact_pairs, current_pairs)
 
+    return current_pairs, com_coords, discarded_pairs
+
+def compute_sidechain_com_distances(u, residue_pairs):
+    """
+    Compute sidechain center-of-mass distances for given residue index pairs.
+    
+    Parameters
+    ----------
+    u : MDAnalysis.Universe
+        The loaded Universe.
+    residue_pairs : list of tuple
+        List of (res1_idx, res2_idx) pairs.
+
+    Returns
+    -------
+    np.ndarray
+        Shape (n_pairs, n_frames) distances.
+    """
+    distances_all = []
+    for res1_idx, res2_idx in residue_pairs:
+        res1_sc = u.residues[res1_idx].atoms.select_atoms("not name N CA C O")
+        res2_sc = u.residues[res2_idx].atoms.select_atoms("not name N CA C O")
+
+        distances_per_frame = []
+        for ts in u.trajectory:
+            com1 = res1_sc.center_of_mass()
+            com2 = res2_sc.center_of_mass()
+            distances_per_frame.append(np.linalg.norm(com1 - com2))
+
+        distances_all.append(distances_per_frame)
+
+    return np.array(distances_all, dtype=float)
+
+import numpy as np
 import MDAnalysis as mda
 from MDAnalysis.analysis import contacts
-import numpy as np
 
-def salt_bridge_contact_map_filtered(ref, trj, filtered_pairs, distance_threshold=5.0):
+def salt_bridge_contact_map_filtered(ref, traj_list, filtered_pairs, distance_threshold=5.0):
     """
-    Compute salt bridge contact maps only for filtered residue pairs.
-    
+    Compute salt bridge contact maps for filtered residue pairs over multiple trajectories.
+
     Args:
         ref (str): topology file
-        trj (str): trajectory file
+        traj_list (list[str]): list of trajectory file paths
         filtered_pairs (list[tuple]): residue index pairs from earlier filtering
         distance_threshold (float): contact cutoff in Å
         
     Returns:
-        binary_contact_map: (n_pairs, n_frames) binary contact map
-        distance_map: (n_pairs, n_frames) salt bridge distances
+        binary_contact_map: (n_pairs, total_frames) binary contact map
+        distance_map: (n_pairs, total_frames) salt bridge distances
         contact_map_names: list of pair labels
     """
-    u = mda.Universe(ref, trj)
+    # Load first trajectory just to identify salt bridge pairs
+    u_test = mda.Universe(ref, traj_list[0])
 
     # Atom selections for salt bridge atoms
     pos_sel = "(resname ARG and name CZ) or (resname LYS and name CE)"
     neg_sel = "(resname ASP and name CG) or (resname GLU and name CD)"
 
-    positive_residues = u.select_atoms(pos_sel)
-    negative_residues = u.select_atoms(neg_sel)
+    positive_residues = u_test.select_atoms(pos_sel)
+    negative_residues = u_test.select_atoms(neg_sel)
 
     # Filter the given pairs to only include those where one is positive and one is negative
     sb_pairs = []
+    contact_map_names = []
+    pair_atom_selections = []
     for i, j in filtered_pairs:
-        res_i = u.residues[i]
-        res_j = u.residues[j]
+        res_i = u_test.residues[i]
+        res_j = u_test.residues[j]
         if ((res_i in positive_residues.residues) and (res_j in negative_residues.residues)) or \
            ((res_j in positive_residues.residues) and (res_i in negative_residues.residues)):
             sb_pairs.append((i, j))
+            name_i = f"{res_i.resname}{res_i.resid}"
+            name_j = f"{res_j.resname}{res_j.resid}"
+            contact_map_names.append(f"{name_i}_{name_j}")
+            atom_i = res_i.atoms.select_atoms(pos_sel if res_i in positive_residues.residues else neg_sel)
+            atom_j = res_j.atoms.select_atoms(pos_sel if res_j in positive_residues.residues else neg_sel)
+            pair_atom_selections.append((atom_i, atom_j))
 
     if not sb_pairs:
         print("No filtered pairs correspond to possible salt bridges.")
         return None, None, None
 
     n_pairs = len(sb_pairs)
-    n_frames = len(u.trajectory)
 
-    # Pre-allocate output
-    binary_contact_map = np.zeros((n_pairs, n_frames), dtype=np.int8)
-    distance_map = np.zeros((n_pairs, n_frames))
-    contact_map_names = []
+    # We'll accumulate results for all trajectories
+    binary_contact_maps = []
+    distance_maps = []
 
-    # Prepare pair atom selections
-    pair_atom_selections = []
-    for i, j in sb_pairs:
-        res_i = u.residues[i]
-        res_j = u.residues[j]
-        name_i = f"{res_i.resname}{res_i.resid}"
-        name_j = f"{res_j.resname}{res_j.resid}"
-        contact_map_names.append(f"{name_i}_{name_j}")
+    for traj in traj_list:
+        u = mda.Universe(ref, traj)
 
-        atom_i = res_i.atoms.select_atoms(pos_sel if res_i in positive_residues.residues else neg_sel)
-        atom_j = res_j.atoms.select_atoms(pos_sel if res_j in positive_residues.residues else neg_sel)
-        pair_atom_selections.append((atom_i, atom_j))
+        # IMPORTANT: Recreate the selections for this trajectory universe
+        traj_pair_selections = []
+        for i, j in sb_pairs:
+            res_i = u.residues[i]
+            res_j = u.residues[j]
+            atom_i = res_i.atoms.select_atoms(pos_sel if res_i.resname in ["ARG", "LYS"] else neg_sel)
+            atom_j = res_j.atoms.select_atoms(pos_sel if res_j.resname in ["ARG", "LYS"] else neg_sel)
+            traj_pair_selections.append((atom_i, atom_j))
 
-    # Loop over trajectory frames
-    for ts in u.trajectory:
-        for idx, (atom_i, atom_j) in enumerate(pair_atom_selections):
-            dist_matrix = contacts.distance_array(atom_i.positions, atom_j.positions)
-            min_dist = np.min(dist_matrix)  # Closest atom distance
-            distance_map[idx, ts.frame] = min_dist
-            binary_contact_map[idx, ts.frame] = int(min_dist <= distance_threshold)
+        n_frames = len(u.trajectory)
+        bin_map = np.zeros((n_pairs, n_frames), dtype=np.int8)
+        dist_map = np.zeros((n_pairs, n_frames))
+
+        # Loop over trajectory frames
+        for ts in u.trajectory:
+            for idx, (atom_i, atom_j) in enumerate(traj_pair_selections):
+                dist_matrix = contacts.distance_array(atom_i.positions, atom_j.positions)
+                min_dist = np.min(dist_matrix)
+                dist_map[idx, ts.frame] = min_dist
+                bin_map[idx, ts.frame] = int(min_dist <= distance_threshold)
+
+        binary_contact_maps.append(bin_map)
+        distance_maps.append(dist_map)
+
+    # Concatenate results across all trajectories
+    binary_contact_map = np.concatenate(binary_contact_maps, axis=1)
+    distance_map = np.concatenate(distance_maps, axis=1)
 
     return binary_contact_map, distance_map, contact_map_names
+
 
 
 
