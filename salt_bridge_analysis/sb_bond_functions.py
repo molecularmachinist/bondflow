@@ -204,7 +204,7 @@ def parallel_batch_filtering(coords, pairs, filter_func, batch_size, desc, n_job
 
 # ---------- Main Processing ---------- #
 
-def compute_com_contacts(trajs, ref, batch_size=100, stride=1, 
+def compute_com_contacts(trajs, ref, selection="protein and not type H",batch_size=100, stride=1, 
                          contact_threshold=8.0, variance_percentile=75, n_jobs=-1):
     """
     Compute COM residue contact pairs from multiple trajectories.
@@ -218,9 +218,7 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
     for traj in trajs:
         model = mda.Universe(ref, traj)
         
-        heavy = model.select_atoms(
-            "protein and not type H and resindex 2321 to 3004 3047 to 3174 1554 to 1900 654 to 1403"
-        )
+        heavy = model.select_atoms(selection)
         n_frames = len(model.trajectory[::stride])
         n_heavy_residues = heavy.residues.n_residues
         
