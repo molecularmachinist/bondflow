@@ -185,13 +185,8 @@ def filter_by_variance(batch_distances, batch_pairs, variance_percentile=75):
     threshold = np.percentile(variances, variance_percentile)
     return [pair for pair, keep in zip(batch_pairs, variances >= threshold) if keep]
 
-def get_discarded_pairs(all_pairs, kept_pairs):
-    """Return pairs that were not kept."""
-    kept_set = set(kept_pairs)
-    return [pair for pair in all_pairs if pair not in kept_set]
 
-
-def parallel_batch_filtering(coords, pairs, filter_func, batch_size, desc, n_jobs=-1, **kwargs):
+def parallel_batch_filtering(coords, pairs, filter_func, batch_size, desc, n_jobs=1, **kwargs):
     """Generic parallel batching for any filter function."""
     n_batches = (len(pairs) + batch_size - 1) // batch_size
 
@@ -209,7 +204,7 @@ def parallel_batch_filtering(coords, pairs, filter_func, batch_size, desc, n_job
 
 # ---------- Main Processing ---------- #
 
-def compute_com_contacts(trajs, ref, selection="protein and not type H",batch_size=100, stride=1, 
+def compute_com_contacts(trajs, ref, batch_size=100, stride=1, 
                          contact_threshold=8.0, variance_percentile=75, n_jobs=-1):
     """
     Compute COM residue contact pairs from multiple trajectories.
@@ -222,23 +217,32 @@ def compute_com_contacts(trajs, ref, selection="protein and not type H",batch_si
 
     for traj in trajs:
         model = mda.Universe(ref, traj)
+
+        heavy = model.select_atoms("protein and not type H")
+        sidechain = model.select_atoms("protein and not name N CA C O H*")
         
-        heavy = model.select_atoms(selection)
         n_frames = len(model.trajectory[::stride])
         n_heavy_residues = heavy.residues.n_residues
-        
+        n_sidechain_residues = sidechain.residues.n_residues
+
         com_coords = np.zeros((n_frames, n_heavy_residues, 3))
+        com_sidechain_coords = np.zeros((n_frames, n_sidechain_residues, 3))
         
         for idx, frame in enumerate(model.trajectory[::stride]):
             com_coords[idx] = heavy.residues.center_of_mass(compound='residues')
+            com_sidechain_coords[idx] = sidechain.residues.center_of_mass(compound='residues')
             print(f"Frame {idx}/{n_frames} from {os.path.basename(traj)}", end="\r")
 
         com_coords_list.append(com_coords)
+        com_sidechain_coords_list.append(com_sidechain_coords)
 
     com_coords = np.concatenate(com_coords_list, axis=0)
+    com_sidechain_coords = np.concatenate(com_sidechian_coords_list, axis=0)
 
     # Generate all residue pairs
-    n_residues = com_coords.shape[1]
+    n_heavy_residues = com_coords.shape[1]
+    n_sidechain_residues = com_sidechain_coords.shape[1]
+
     all_pairs = list(combinations(range(n_residues), 2))
     print(f"Total possible residue pairs: {len(all_pairs)}")
 
@@ -268,36 +272,7 @@ def compute_com_contacts(trajs, ref, selection="protein and not type H",batch_si
 
     return current_pairs, com_coords, discarded_pairs
 
-def compute_sidechain_com_distances(u, residue_pairs):
-    """
-    Compute sidechain center-of-mass distances for given residue index pairs.
-    
-    Parameters
-    ----------
-    u : MDAnalysis.Universe
-        The loaded Universe.
-    residue_pairs : list of tuple
-        List of (res1_idx, res2_idx) pairs.
 
-    Returns
-    -------
-    np.ndarray
-        Shape (n_pairs, n_frames) distances.
-    """
-    distances_all = []
-    for res1_idx, res2_idx in residue_pairs:
-        res1_sc = u.residues[res1_idx].atoms.select_atoms("not name N CA C O")
-        res2_sc = u.residues[res2_idx].atoms.select_atoms("not name N CA C O")
-
-        distances_per_frame = []
-        for ts in u.trajectory:
-            com1 = res1_sc.center_of_mass()
-            com2 = res2_sc.center_of_mass()
-            distances_per_frame.append(np.linalg.norm(com1 - com2))
-
-        distances_all.append(distances_per_frame)
-
-    return np.array(distances_all, dtype=float)
 
 import numpy as np
 import MDAnalysis as mda
