@@ -214,12 +214,13 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
         com_coords: concatenated COM coordinates
     """
     com_coords_list = []
+    com_sidechain_coords_list = []
 
     for traj in trajs:
         model = mda.Universe(ref, traj)
 
         heavy = model.select_atoms("protein and not type H")
-        sidechain = model.select_atoms("protein and not name N CA C O H*")
+        sidechain = model.select_atoms("protein and not (name N CA C O H*)")
         
         n_frames = len(model.trajectory[::stride])
         n_heavy_residues = heavy.residues.n_residues
@@ -237,7 +238,7 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
         com_sidechain_coords_list.append(com_sidechain_coords)
 
     com_coords = np.concatenate(com_coords_list, axis=0)
-    com_sidechain_coords = np.concatenate(com_sidechian_coords_list, axis=0)
+    com_sidechain_coords = np.concatenate(com_sidechain_coords_list, axis=0)
 
     # Generate all residue pairs
     n_heavy_residues = com_coords.shape[1]
@@ -248,7 +249,7 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
 
 
     all_sidechain_pairs = list(combinations(range(n_sidechain_residues), 2))
-    print(f"Total possible sidechain residue pairs: {len(all_side_chainpairs)}")
+    print(f"Total possible sidechain residue pairs: {len(all_sidechain_pairs)}")
 
     # Stage 1: Contact Filter
 
