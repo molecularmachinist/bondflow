@@ -243,10 +243,16 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
     n_heavy_residues = com_coords.shape[1]
     n_sidechain_residues = com_sidechain_coords.shape[1]
 
-    all_pairs = list(combinations(range(n_residues), 2))
+    all_pairs = list(combinations(range(n_heavy_residues), 2))
     print(f"Total possible residue pairs: {len(all_pairs)}")
 
+
+    all_sidechain_pairs = list(combinations(range(n_sidechain_residues), 2))
+    print(f"Total possible sidechain residue pairs: {len(all_side_chainpairs)}")
+
     # Stage 1: Contact Filter
+
+        # Filter by center of mass distances
     current_pairs = parallel_batch_filtering(
         coords=com_coords, pairs=all_pairs,
         filter_func=filter_by_contact,
@@ -255,9 +261,16 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
     )
     print(f"Pairs after contact filter: {len(current_pairs)}")
 
-    # Stage 2: Variance Filter
+        # Filter by sidechain center of mass distances
+    current_sidechain_pairs = parallel_batch_filtering(
+        coords=com_sidechain_coords, pairs=all_sidechain_pairs,
+        filter_func=filter_by_contact,
+        batch_size=batch_size, desc="Stage 1: Contact Filter",
+        n_jobs=n_jobs, contact_threshold=contact_threshold
+    )
+    print(f"Sidechain pairs after contact filter: {len(current_sidechain_pairs)}")
 
-    com_contact_pairs = current_pairs
+    # Stage 2: Variance Filter
 
     current_pairs = parallel_batch_filtering(
         coords=com_coords, pairs=current_pairs,
@@ -267,10 +280,15 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
     )
     print(f"Pairs after variance filter: {len(current_pairs)}")
 
-    # Step 3: Find discarded pairs for side chain analysis
-    discarded_pairs = get_discarded_pairs(com_contact_pairs, current_pairs)
+    current_sidechain_pairs = parallel_batch_filtering(
+        coords=com_sidechain_coords, pairs=current_sidechain_pairs,
+        filter_func=filter_by_variance,
+        batch_size=batch_size, desc="Stage 2: Variance Filter",
+        n_jobs=n_jobs, variance_percentile=variance_percentile
+    )
+    print(f"Pairs after variance filter: {len(current_pairs)}")
 
-    return current_pairs, com_coords, discarded_pairs
+    return current_pairs, com_coords, com_sidechain_coords, current_sidechain_pairs
 
 
 
