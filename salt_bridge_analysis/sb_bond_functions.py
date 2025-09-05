@@ -220,7 +220,7 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
         model = mda.Universe(ref, traj)
 
         heavy = model.select_atoms("protein and not type H")
-        sidechain = model.select_atoms("protein and not (name N CA C O H*)")
+        sidechain = model.select_atoms("protein and not (name N and name CA and name C and name O and type H)")
         
         n_frames = len(model.trajectory[::stride])
         n_heavy_residues = heavy.residues.n_residues
