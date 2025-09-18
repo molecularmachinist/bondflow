@@ -210,57 +210,65 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
     Compute COM residue contact pairs from multiple trajectories.
     
     Returns:
-        current_pairs: filtered residue pairs
-        com_coords: concatenated COM coordinates
+        current_mainchain_pairs: filtered residue pairs
+        com_mainchain_coords: concatenated COM coordinates
     """
-    com_coords_list = []
+    com_mainchain_coords_list = []
     com_sidechain_coords_list = []
 
     for traj in trajs:
         model = mda.Universe(ref, traj)
-
-        heavy = model.select_atoms("protein and not type H")
+        # main chain com and sidechain com
+        main_chain = model.select_atoms("protein name N and name CA and name C and name O and not type H")
         sidechain = model.select_atoms("protein and not (name N and name CA and name C and name O and type H)")
         
         n_frames = len(model.trajectory[::stride])
-        n_heavy_residues = heavy.residues.n_residues
+        n_mainchain_residues = main_chain.residues.n_residues
         n_sidechain_residues = sidechain.residues.n_residues
 
-        com_coords = np.zeros((n_frames, n_heavy_residues, 3))
+        com_mainchain_coords = np.zeros((n_frames, n_mainchain_residues, 3))
         com_sidechain_coords = np.zeros((n_frames, n_sidechain_residues, 3))
         
         for idx, frame in enumerate(model.trajectory[::stride]):
-            com_coords[idx] = heavy.residues.center_of_mass(compound='residues')
+            com_mainchain_coords[idx] = main_chain.residues.center_of_mass(compound='residues')
             com_sidechain_coords[idx] = sidechain.residues.center_of_mass(compound='residues')
             print(f"Frame {idx}/{n_frames} from {os.path.basename(traj)}", end="\r")
 
-        com_coords_list.append(com_coords)
+        com_mainchain_coords_list.append(com_mainchain_coords)
         com_sidechain_coords_list.append(com_sidechain_coords)
 
-    com_coords = np.concatenate(com_coords_list, axis=0)
+    com_mainchain_coords = np.concatenate(com_mainchain_coords_list, axis=0)
     com_sidechain_coords = np.concatenate(com_sidechain_coords_list, axis=0)
+    combined = np.concatenate([com_mainchain_coords, com_sidechain_coords], axis=0)
 
-    # Generate all residue pairs
-    n_heavy_residues = com_coords.shape[1]
+    # Generate all sidechain-sidechain, mainchain-mainchain, mainchain-sidechain pairs
+
+    n_mainchain_residues = com_mainchain_coords.shape[1]
     n_sidechain_residues = com_sidechain_coords.shape[1]
+    n_pairs = combined.shape[1]
 
-    all_pairs = list(combinations(range(n_heavy_residues), 2))
-    print(f"Total possible residue pairs: {len(all_pairs)}")
+    all_pairs = list(combinations(range(n_pairs), 2))
+    print(f"Total possible residue pairs: {len(all_mainchain_pairs)}")
+
+    all_mainchain_pairs = list(combinations(range(n_mainchain_residues), 2))
+    print(f"Total possible residue pairs: {len(all_mainchain_pairs)}")
 
 
     all_sidechain_pairs = list(combinations(range(n_sidechain_residues), 2))
     print(f"Total possible sidechain residue pairs: {len(all_sidechain_pairs)}")
 
+    #CONTINUE!!!!!!HERE
+
     # Stage 1: Contact Filter
 
         # Filter by center of mass distances
-    current_pairs = parallel_batch_filtering(
-        coords=com_coords, pairs=all_pairs,
+    current_mainchain_pairs = parallel_batch_filtering(
+        coords=com_mainchain_coords, pairs=all_mainchain_pairs,
         filter_func=filter_by_contact,
         batch_size=batch_size, desc="Stage 1: Contact Filter",
         n_jobs=n_jobs, contact_threshold=contact_threshold
     )
-    print(f"Pairs after contact filter: {len(current_pairs)}")
+    print(f"Pairs after contact filter: {len(current_mainchain_pairs)}")
 
         # Filter by sidechain center of mass distances
     current_sidechain_pairs = parallel_batch_filtering(
@@ -273,13 +281,13 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
 
     # Stage 2: Variance Filter
 
-    current_pairs = parallel_batch_filtering(
-        coords=com_coords, pairs=current_pairs,
+    current_mainchain_pairs = parallel_batch_filtering(
+        coords=com_mainchain_coords, pairs=current_mainchain_pairs,
         filter_func=filter_by_variance,
         batch_size=batch_size, desc="Stage 2: Variance Filter",
         n_jobs=n_jobs, variance_percentile=variance_percentile
     )
-    print(f"Pairs after variance filter: {len(current_pairs)}")
+    print(f"Pairs after variance filter: {len(current_mainchain_pairs)}")
 
     current_sidechain_pairs = parallel_batch_filtering(
         coords=com_sidechain_coords, pairs=current_sidechain_pairs,
@@ -287,9 +295,9 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
         batch_size=batch_size, desc="Stage 2: Variance Filter",
         n_jobs=n_jobs, variance_percentile=variance_percentile
     )
-    print(f"Pairs after variance filter: {len(current_pairs)}")
+    print(f"Sidechain pairs after variance filter: {len(current_mainchain_pairs)}")
 
-    return current_pairs, com_coords, com_sidechain_coords, current_sidechain_pairs
+    return current_mainchain_pairs, com_mainchain_coords, com_sidechain_coords, current_sidechain_pairs
 
 
 
