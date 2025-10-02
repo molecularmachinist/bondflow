@@ -248,16 +248,15 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
     n_pairs = combined.shape[1]
 
     all_pairs = list(combinations(range(n_pairs), 2))
-    print(f"Total possible residue pairs: {len(all_mainchain_pairs)}")
+    print(f"Double the total possible residue pairs: {len(all_pairs)}")
 
     all_mainchain_pairs = list(combinations(range(n_mainchain_residues), 2))
-    print(f"Total possible residue pairs: {len(all_mainchain_pairs)}")
+    print(f"Total possible mainchain residue pairs: {len(all_mainchain_pairs)}")
 
 
     all_sidechain_pairs = list(combinations(range(n_sidechain_residues), 2))
     print(f"Total possible sidechain residue pairs: {len(all_sidechain_pairs)}")
 
-    #CONTINUE!!!!!!HERE
 
     # Stage 1: Contact Filter
 
@@ -268,7 +267,7 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
         batch_size=batch_size, desc="Stage 1: Contact Filter",
         n_jobs=n_jobs, contact_threshold=contact_threshold
     )
-    print(f"Pairs after contact filter: {len(current_mainchain_pairs)}")
+    print(f"Mainchain pairs after contact filter: {len(current_mainchain_pairs)}")
 
         # Filter by sidechain center of mass distances
     current_sidechain_pairs = parallel_batch_filtering(
@@ -279,6 +278,15 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
     )
     print(f"Sidechain pairs after contact filter: {len(current_sidechain_pairs)}")
 
+        # Filter by sidechain-sidechain, mainchain-mainchain, mainchain-sidechain center of mass distances
+    current_pairs = parallel_batch_filtering(
+        coords=combined, pairs=all_pairs,
+        filter_func=filter_by_contact,
+        batch_size=batch_size, desc="Stage 1: Contact Filter",
+        n_jobs=n_jobs, contact_threshold=contact_threshold
+    )
+    print(f"Pairs after contact filter: {len(current_pairs)}")
+
     # Stage 2: Variance Filter
 
     current_mainchain_pairs = parallel_batch_filtering(
@@ -287,7 +295,7 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
         batch_size=batch_size, desc="Stage 2: Variance Filter",
         n_jobs=n_jobs, variance_percentile=variance_percentile
     )
-    print(f"Pairs after variance filter: {len(current_mainchain_pairs)}")
+    print(f"Mainchain pairs after variance filter: {len(current_mainchain_pairs)}")
 
     current_sidechain_pairs = parallel_batch_filtering(
         coords=com_sidechain_coords, pairs=current_sidechain_pairs,
@@ -295,9 +303,17 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
         batch_size=batch_size, desc="Stage 2: Variance Filter",
         n_jobs=n_jobs, variance_percentile=variance_percentile
     )
-    print(f"Sidechain pairs after variance filter: {len(current_mainchain_pairs)}")
+    print(f"Sidechain pairs after variance filter: {len(current_sidechain_pairs)}")
 
-    return current_mainchain_pairs, com_mainchain_coords, com_sidechain_coords, current_sidechain_pairs
+    current_pairs = parallel_batch_filtering(
+        coords=combined, pairs=current_pairs,
+        filter_func=filter_by_variance,
+        batch_size=batch_size, desc="Stage 2: Variance Filter",
+        n_jobs=n_jobs, variance_percentile=variance_percentile
+    )
+    print(f"Pairs after variance filter: {len(current_pairs)}")
+
+    return current_mainchain_pairs, com_mainchain_coords, com_sidechain_coords, current_sidechain_pairs, current_pairs, combined
 
 
 
