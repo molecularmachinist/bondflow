@@ -170,17 +170,17 @@ def compute_batch_distances_vectorized(coords, batch_pairs):
 
 def filter_by_contact(batch_distances, batch_pairs, contact_threshold=8.0):
     """Keep residue pairs with min distance <= threshold."""
-    min_distances = np.min(batch_distances, axis=0)
+    min_distances = np.nanmin(batch_distances, axis=0)
     return [pair for pair, keep in zip(batch_pairs, min_distances <= contact_threshold) if keep]
 
 
 def filter_by_variance(batch_distances, batch_pairs, variance_percentile=75):
     """Keep residue pairs above the given variance percentile."""
-    min_d = np.min(batch_distances, axis=0)
-    max_d = np.max(batch_distances, axis=0)
+    min_d = np.nanmin(batch_distances, axis=0)
+    max_d = np.nanmax(batch_distances, axis=0)
     
     normalized = (batch_distances - min_d) / (max_d - min_d + 1e-8)
-    variances = np.var(normalized, axis=0)
+    variances = np.nanvar(normalized, axis=0)
     
     threshold = np.percentile(variances, variance_percentile)
     return [pair for pair, keep in zip(batch_pairs, variances >= threshold) if keep]
@@ -218,28 +218,39 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
 
     for traj in trajs:
         model = mda.Universe(ref, traj)
-        # main chain com and sidechain com
-        main_chain = model.select_atoms("protein name N and name CA and name C and name O and not type H")
-        sidechain = model.select_atoms("protein and not (name N and name CA and name C and name O and type H)")
+        protein_residues = model.select_atoms("protein").residues
         
         n_frames = len(model.trajectory[::stride])
-        n_mainchain_residues = main_chain.residues.n_residues
-        n_sidechain_residues = sidechain.residues.n_residues
+        n_residues = len(protein_residues)
 
-        com_mainchain_coords = np.zeros((n_frames, n_mainchain_residues, 3))
-        com_sidechain_coords = np.zeros((n_frames, n_sidechain_residues, 3))
+        com_mainchain_coords = np.zeros((n_frames, n_residues, 3))
+        com_sidechain_coords = np.zeros((n_frames, n_residues, 3))
         
         for idx, frame in enumerate(model.trajectory[::stride]):
-            com_mainchain_coords[idx] = main_chain.residues.center_of_mass(compound='residues')
-            com_sidechain_coords[idx] = sidechain.residues.center_of_mass(compound='residues')
+            for j, res in enumerate(protein_residues):
+                main = res.atoms.select_atoms("name N or name CA or name C or name O and not type H")
+                side = res.atoms.select_atoms("not (name N or name CA or name C or name O) and not type H")
+                
+                if len(main) > 0:
+                    com_mainchain_coords[idx, j] = main.center_of_mass()
+                else:
+                    com_mainchain_coords[idx, j] = np.nan  # just in case
+                
+                if len(side) > 0:
+                    com_sidechain_coords[idx, j] = side.center_of_mass()
+                else:
+                    com_sidechain_coords[idx, j] = np.nan  # e.g. glycine, no sidechain
             print(f"Frame {idx}/{n_frames} from {os.path.basename(traj)}", end="\r")
-
+        
         com_mainchain_coords_list.append(com_mainchain_coords)
         com_sidechain_coords_list.append(com_sidechain_coords)
 
+    # Concatenate across trajectories
     com_mainchain_coords = np.concatenate(com_mainchain_coords_list, axis=0)
     com_sidechain_coords = np.concatenate(com_sidechain_coords_list, axis=0)
-    combined = np.concatenate([com_mainchain_coords, com_sidechain_coords], axis=0)
+
+    # Combine: shape = (n_frames_total, 2*n_residues, 3)
+    combined = np.concatenate([com_mainchain_coords, com_sidechain_coords], axis=1)
 
     # Generate all sidechain-sidechain, mainchain-mainchain, mainchain-sidechain pairs
 
