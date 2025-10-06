@@ -201,130 +201,138 @@ def parallel_batch_filtering(coords, pairs, filter_func, batch_size, desc, n_job
     )
     return [pair for sublist in results for pair in sublist]
 
+import pandas as pd
+
+def pairs_to_dataframe(all_pairs, n_mainchain_residues, protein_residues):
+    """
+    Convert index pairs to a pandas DataFrame with residue names, numbers, and chain types.
+    
+    Returns
+    -------
+    df : pandas.DataFrame
+        Columns: residue_i, type_i, residue_j, type_j, pair_name
+    """
+    data = []
+    
+    for i, j in all_pairs:
+        type_i = 'MC' if i < n_mainchain_residues else 'SC'
+        type_j = 'MC' if j < n_mainchain_residues else 'SC'
+        
+        resid_i = protein_residues[i % n_mainchain_residues]
+        resid_j = protein_residues[j % n_mainchain_residues]
+        
+        res_i_str = f"{resid_i.resname}{resid_i.resid}"
+        res_j_str = f"{resid_j.resname}{resid_j.resid}"
+        pair_name = f"{res_i_str}({type_i})_{res_j_str}({type_j})"
+        
+        data.append([res_i_str, type_i, res_j_str, type_j, pair_name])
+    
+    df = pd.DataFrame(data, columns=['residue_i', 'type_i', 'residue_j', 'type_j', 'pair_name'])
+    return df
+
+
 
 # ---------- Main Processing ---------- #
 
-def compute_com_contacts(trajs, ref, batch_size=100, stride=1, 
-                         contact_threshold=8.0, variance_percentile=75, n_jobs=-1):
+def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
+                         contact_threshold=8.0, variance_percentile=75, n_jobs=1):
     """
     Compute COM residue contact pairs from multiple trajectories.
+    Faster version using vectorized MDAnalysis operations and parallel trajectory processing.
     
     Returns:
         current_mainchain_pairs: filtered residue pairs
         com_mainchain_coords: concatenated COM coordinates
     """
-    com_mainchain_coords_list = []
-    com_sidechain_coords_list = []
 
-    for traj in trajs:
+    # -------- Helper to process one trajectory -------- #
+    def process_single_traj(traj):
         model = mda.Universe(ref, traj)
         protein_residues = model.select_atoms("protein").residues
-        
-        n_frames = len(model.trajectory[::stride])
         n_residues = len(protein_residues)
+        n_frames = len(model.trajectory[::stride])
 
-        com_mainchain_coords = np.zeros((n_frames, n_residues, 3))
-        com_sidechain_coords = np.zeros((n_frames, n_residues, 3))
-        
-        for idx, frame in enumerate(model.trajectory[::stride]):
-            for j, res in enumerate(protein_residues):
-                main = res.atoms.select_atoms("name N or name CA or name C or name O and not type H")
-                side = res.atoms.select_atoms("not (name N or name CA or name C or name O) and not type H")
-                
-                if len(main) > 0:
-                    com_mainchain_coords[idx, j] = main.center_of_mass()
-                else:
-                    com_mainchain_coords[idx, j] = np.nan  # just in case
-                
-                if len(side) > 0:
-                    com_sidechain_coords[idx, j] = side.center_of_mass()
-                else:
-                    com_sidechain_coords[idx, j] = np.nan  # e.g. glycine, no sidechain
-            print(f"Frame {idx}/{n_frames} from {os.path.basename(traj)}", end="\r")
-        
-        com_mainchain_coords_list.append(com_mainchain_coords)
-        com_sidechain_coords_list.append(com_sidechain_coords)
+        com_mainchain_coords = np.empty((n_frames, n_residues, 3))
+        com_sidechain_coords = np.full((n_frames, n_residues, 3), np.nan)  # fill with NaN
 
-    # Concatenate across trajectories
-    com_mainchain_coords = np.concatenate(com_mainchain_coords_list, axis=0)
-    com_sidechain_coords = np.concatenate(com_sidechain_coords_list, axis=0)
+        # Vectorized selections
+        mainchain = model.select_atoms(
+            "protein and (name N or name CA or name C or name O) and not type H"
+        )
+        sidechain = model.select_atoms(
+            "protein and not (name N or name CA or name C or name O) and not type H"
+        )
+
+        # Residue ID mapping (to fill COMs in correct order)
+        residue_ids = protein_residues.resids
+        sidechain_resids = sidechain.residues.resids
+        resid_to_index = {resid: i for i, resid in enumerate(residue_ids)}
+
+        for idx, ts in enumerate(tqdm(model.trajectory[::stride], desc=os.path.basename(traj))):
+            com_mainchain_coords[idx] = mainchain.center_of_mass(compound='residues')
+
+            # Vectorized COMs for sidechains that exist
+            sidechain_coms = sidechain.center_of_mass(compound='residues')
+            for sc_resid, com in zip(sidechain_resids, sidechain_coms):
+                j = resid_to_index.get(sc_resid)
+                if j is not None:
+                    com_sidechain_coords[idx, j] = com
+
+        return com_mainchain_coords, com_sidechain_coords
+
+
+    # -------- Process trajectories in parallel -------- #
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(process_single_traj)(traj) for traj in trajs
+    )
+
+    # Combine results across trajectories
+    com_mainchain_coords = np.concatenate([r[0] for r in results], axis=0)
+    com_sidechain_coords = np.concatenate([r[1] for r in results], axis=0)
 
     # Combine: shape = (n_frames_total, 2*n_residues, 3)
-    combined = np.concatenate([com_mainchain_coords, com_sidechain_coords], axis=1)
-
-    # Generate all sidechain-sidechain, mainchain-mainchain, mainchain-sidechain pairs
+    combined_coords = np.concatenate([com_mainchain_coords, com_sidechain_coords], axis=1)
 
     n_mainchain_residues = com_mainchain_coords.shape[1]
     n_sidechain_residues = com_sidechain_coords.shape[1]
-    n_pairs = combined.shape[1]
+    n_pairs = combined_coords.shape[1]
 
+    # Precompute residue index combinations
     all_pairs = list(combinations(range(n_pairs), 2))
-    print(f"Double the total possible residue pairs: {len(all_pairs)}")
+    
+    print(f"Total residue pairs: {len(all_pairs):,}")
 
     all_mainchain_pairs = list(combinations(range(n_mainchain_residues), 2))
-    print(f"Total possible mainchain residue pairs: {len(all_mainchain_pairs)}")
-
+    print(f"Mainchain pairs: {len(all_mainchain_pairs):,}")
 
     all_sidechain_pairs = list(combinations(range(n_sidechain_residues), 2))
-    print(f"Total possible sidechain residue pairs: {len(all_sidechain_pairs)}")
+    print(f"Sidechain pairs: {len(all_sidechain_pairs):,}")
 
-
-    # Stage 1: Contact Filter
-
-        # Filter by center of mass distances
-    current_mainchain_pairs = parallel_batch_filtering(
-        coords=com_mainchain_coords, pairs=all_mainchain_pairs,
-        filter_func=filter_by_contact,
-        batch_size=batch_size, desc="Stage 1: Contact Filter",
-        n_jobs=n_jobs, contact_threshold=contact_threshold
-    )
-    print(f"Mainchain pairs after contact filter: {len(current_mainchain_pairs)}")
-
-        # Filter by sidechain center of mass distances
-    current_sidechain_pairs = parallel_batch_filtering(
-        coords=com_sidechain_coords, pairs=all_sidechain_pairs,
-        filter_func=filter_by_contact,
-        batch_size=batch_size, desc="Stage 1: Contact Filter",
-        n_jobs=n_jobs, contact_threshold=contact_threshold
-    )
-    print(f"Sidechain pairs after contact filter: {len(current_sidechain_pairs)}")
-
-        # Filter by sidechain-sidechain, mainchain-mainchain, mainchain-sidechain center of mass distances
+    # -------- Stage 1: Contact Filter -------- #
     current_pairs = parallel_batch_filtering(
-        coords=combined, pairs=all_pairs,
+        coords=combined_coords,
+        pairs=all_pairs,
         filter_func=filter_by_contact,
-        batch_size=batch_size, desc="Stage 1: Contact Filter",
-        n_jobs=n_jobs, contact_threshold=contact_threshold
+        batch_size=batch_size,
+        desc="Stage 1: Contact Filter",
+        n_jobs=n_jobs,
+        contact_threshold=contact_threshold,
     )
-    print(f"Pairs after contact filter: {len(current_pairs)}")
+    print(f"Pairs after contact filter: {len(current_pairs):,}")
 
-    # Stage 2: Variance Filter
-
-    current_mainchain_pairs = parallel_batch_filtering(
-        coords=com_mainchain_coords, pairs=current_mainchain_pairs,
-        filter_func=filter_by_variance,
-        batch_size=batch_size, desc="Stage 2: Variance Filter",
-        n_jobs=n_jobs, variance_percentile=variance_percentile
-    )
-    print(f"Mainchain pairs after variance filter: {len(current_mainchain_pairs)}")
-
-    current_sidechain_pairs = parallel_batch_filtering(
-        coords=com_sidechain_coords, pairs=current_sidechain_pairs,
-        filter_func=filter_by_variance,
-        batch_size=batch_size, desc="Stage 2: Variance Filter",
-        n_jobs=n_jobs, variance_percentile=variance_percentile
-    )
-    print(f"Sidechain pairs after variance filter: {len(current_sidechain_pairs)}")
-
+    # -------- Stage 2: Variance Filter -------- #
     current_pairs = parallel_batch_filtering(
-        coords=combined, pairs=current_pairs,
+        coords=combined_coords,
+        pairs=current_pairs,
         filter_func=filter_by_variance,
-        batch_size=batch_size, desc="Stage 2: Variance Filter",
-        n_jobs=n_jobs, variance_percentile=variance_percentile
+        batch_size=batch_size,
+        desc="Stage 2: Variance Filter",
+        n_jobs=n_jobs,
+        variance_percentile=variance_percentile,
     )
-    print(f"Pairs after variance filter: {len(current_pairs)}")
+    print(f"Pairs after variance filter: {len(current_pairs):,}")
 
-    return current_mainchain_pairs, com_mainchain_coords, com_sidechain_coords, current_sidechain_pairs, current_pairs, combined
+    return all_pairs, current_pairs, combined_coords, n_mainchain_residues
 
 
 
