@@ -346,6 +346,23 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
 
     return all_pairs, current_pairs, combined_coords, n_mainchain_residues
 
+def map_combined_to_original(unique_pairs, n_mainchain_residues):
+    """
+    Map combined COM indices back to original residue indices.
+
+    Args:
+        unique_pairs (list[tuple[int, int]]): Pairs of indices into combined_coords
+        n_mainchain_residues (int): Number of residues in the protein
+
+    Returns:
+        list[tuple[int, int]]: Pairs of original residue indices
+    """
+    original_pairs = []
+    for i, j in unique_pairs:
+        orig_i = i % n_mainchain_residues
+        orig_j = j % n_mainchain_residues
+        original_pairs.append((orig_i, orig_j))
+    return original_pairs
 
 
 import numpy as np
