@@ -295,30 +295,29 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
 
     n_mainchain_residues = com_mainchain_coords.shape[1]
     n_sidechain_residues = com_sidechain_coords.shape[1]
+    n_pairs = combined_coords.shape[1]
     
     # --- Generate pairs ---
 
+    all_pairs = list(combinations(range(n_pairs), 2))
+    print(f"Total contact pairs: {len(all_pairs)}")
+
     # Mainchain–Mainchain pairs
-    all_mainchain_pairs = list(combinations(range(n_mainchain_residues), 2))
+    #all_mainchain_pairs = list(combinations(range(n_mainchain_residues), 2))
 
     # Sidechain–Sidechain pairs
-    all_sidechain_pairs = list(combinations(range(n_mainchain_residues, n_mainchain_residues + n_sidechain_residues), 2))
+    #all_sidechain_pairs = list(combinations(range(n_mainchain_residues, n_mainchain_residues + n_sidechain_residues), 2))
 
     # Mainchain–Sidechain pairs (no reversed duplicates)
-    main_idx = np.arange(n_mainchain_residues)
-    side_idx = np.arange(n_mainchain_residues, n_mainchain_residues + n_sidechain_residues)
+    #main_idx = np.arange(n_mainchain_residues)
+    #side_idx = np.arange(n_mainchain_residues, n_mainchain_residues + n_sidechain_residues)
 
     # Only keep unique residue–residue combos (avoid MC–SC + SC–MC)
-    mc_sc_pairs = [(i, j) for i, j in product(main_idx, side_idx) if (i % n_mainchain_residues) < (j % n_mainchain_residues)]
+    #mc_sc_pairs = [(i, j) for i, j in product(main_idx, side_idx) if (i % n_mainchain_residues) < (j % n_mainchain_residues)]
 
     # Combine all pairs
-    all_pairs = all_mainchain_pairs + all_sidechain_pairs + mc_sc_pairs
+    #all_pairs = all_mainchain_pairs + all_sidechain_pairs + mc_sc_pairs
 
-    # --- Print stats ---
-    print(f"Total residue pairs: {len(all_pairs):,}")
-    print(f"Mainchain pairs: {len(all_mainchain_pairs):,}")
-    print(f"Sidechain pairs: {len(all_sidechain_pairs):,}")
-    print(f"Mainchain–Sidechain pairs (unique): {len(mc_sc_pairs):,}")
 
     # -------- Stage 1: Contact Filter -------- #
     current_pairs = parallel_batch_filtering(
