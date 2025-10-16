@@ -203,7 +203,7 @@ def parallel_batch_filtering(coords, pairs, filter_func, batch_size, desc, n_job
 
 import pandas as pd
 
-def pairs_to_dataframe(all_pairs, n_mainchain_residues, protein_residues):
+def pairs_to_dataframe(pairs, n_mainchain_residues, protein_residues):
     """
     Convert index pairs to a pandas DataFrame with residue names, numbers, and chain types.
     
@@ -295,28 +295,12 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
 
     n_mainchain_residues = com_mainchain_coords.shape[1]
     n_sidechain_residues = com_sidechain_coords.shape[1]
-    n_pairs = combined_coords.shape[1]
+    n_coords = combined_coords.shape[1]
     
     # --- Generate pairs ---
 
-    all_pairs = list(combinations(range(n_pairs), 2))
-    print(f"Total contact pairs: {len(all_pairs)}")
-
-    # Mainchain–Mainchain pairs
-    #all_mainchain_pairs = list(combinations(range(n_mainchain_residues), 2))
-
-    # Sidechain–Sidechain pairs
-    #all_sidechain_pairs = list(combinations(range(n_mainchain_residues, n_mainchain_residues + n_sidechain_residues), 2))
-
-    # Mainchain–Sidechain pairs (no reversed duplicates)
-    #main_idx = np.arange(n_mainchain_residues)
-    #side_idx = np.arange(n_mainchain_residues, n_mainchain_residues + n_sidechain_residues)
-
-    # Only keep unique residue–residue combos (avoid MC–SC + SC–MC)
-    #mc_sc_pairs = [(i, j) for i, j in product(main_idx, side_idx) if (i % n_mainchain_residues) < (j % n_mainchain_residues)]
-
-    # Combine all pairs
-    #all_pairs = all_mainchain_pairs + all_sidechain_pairs + mc_sc_pairs
+    n_pairs = all_pairs = list(combinations(range(n_coords), 2))
+    print(f"Total contact pairs: {len(n_pairs)}")
 
 
     # -------- Stage 1: Contact Filter -------- #
