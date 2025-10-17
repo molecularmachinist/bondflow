@@ -214,7 +214,7 @@ def pairs_to_dataframe(pairs, n_mainchain_residues, protein_residues):
     """
     data = []
     
-    for i, j in all_pairs:
+    for i, j in pairs:
         type_i = 'MC' if i < n_mainchain_residues else 'SC'
         type_j = 'MC' if j < n_mainchain_residues else 'SC'
         
@@ -299,8 +299,8 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
     
     # --- Generate pairs ---
 
-    n_pairs = all_pairs = list(combinations(range(n_coords), 2))
-    print(f"Total contact pairs: {len(n_pairs)}")
+    all_pairs = list(combinations(range(n_coords), 2))
+    print(f"Total contact pairs: {len(all_pairs)}")
 
 
     # -------- Stage 1: Contact Filter -------- #
