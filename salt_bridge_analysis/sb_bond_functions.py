@@ -4,6 +4,10 @@ import MDAnalysis as mda
 import numpy as np
 from MDAnalysis.analysis import contacts
 import pandas as pd
+import os
+from tqdm import tqdm
+from itertools import combinations, product
+from joblib import Parallel, delayed
 
 
 
@@ -150,12 +154,6 @@ def create_contact_map_from_dataframe(df):
 
     return contact_map, cols_list
 
-import os
-import numpy as np
-import MDAnalysis as mda
-from tqdm import tqdm
-from itertools import combinations, product
-from joblib import Parallel, delayed
 
 
 # ---------- Utility Functions ---------- #
@@ -201,7 +199,6 @@ def parallel_batch_filtering(coords, pairs, filter_func, batch_size, desc, n_job
     )
     return [pair for sublist in results for pair in sublist]
 
-import pandas as pd
 
 def pairs_to_dataframe(pairs, n_mainchain_residues, protein_residues):
     """
