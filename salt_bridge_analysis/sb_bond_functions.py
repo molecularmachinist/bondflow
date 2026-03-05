@@ -8,6 +8,8 @@ import os
 from tqdm import tqdm
 from itertools import combinations, product
 from joblib import Parallel, delayed
+from itertools import combinations
+from statsmodels.stats.diagnostic import lilliefors
 
 
 
@@ -154,11 +156,11 @@ def create_contact_map_from_dataframe(df):
 
     return contact_map, cols_list
 
-
+# UUTTA!
 
 # ---------- Utility Functions ---------- #
 
-def compute_batch_distances_vectorized(coords, batch_pairs):
+def compute_batch_distances(coords, batch_pairs):
     """Compute pairwise distances for a batch of residue pairs across all frames."""
     i_indices = np.array([i for i, _ in batch_pairs])
     j_indices = np.array([j for _, j in batch_pairs])
@@ -191,7 +193,7 @@ def parallel_batch_filtering(coords, pairs, filter_func, batch_size, desc, n_job
     def process_batch(batch_idx):
         start, end = batch_idx * batch_size, min((batch_idx + 1) * batch_size, len(pairs))
         batch_pairs = pairs[start:end]
-        batch_distances = compute_batch_distances_vectorized(coords, batch_pairs)
+        batch_distances = compute_batch_distances(coords, batch_pairs)
         return filter_func(batch_distances, batch_pairs, **kwargs)
 
     results = Parallel(n_jobs=n_jobs)(
@@ -203,11 +205,6 @@ def parallel_batch_filtering(coords, pairs, filter_func, batch_size, desc, n_job
 def pairs_to_dataframe(pairs, n_mainchain_residues, protein_residues):
     """
     Convert index pairs to a pandas DataFrame with residue names, numbers, and chain types.
-    
-    Returns
-    -------
-    df : pandas.DataFrame
-        Columns: residue_i, type_i, residue_j, type_j, pair_name
     """
     data = []
     
@@ -215,16 +212,22 @@ def pairs_to_dataframe(pairs, n_mainchain_residues, protein_residues):
         type_i = 'MC' if i < n_mainchain_residues else 'SC'
         type_j = 'MC' if j < n_mainchain_residues else 'SC'
         
+        # Map to residue index within main chain block
         resid_i = protein_residues[i % n_mainchain_residues]
         resid_j = protein_residues[j % n_mainchain_residues]
         
-        res_i_str = f"{resid_i.resname}{resid_i.resid}"
-        res_j_str = f"{resid_j.resname}{resid_j.resid}"
+        res_i_str = f"{resid_i.resname}{resid_i.resnum}"
+        res_j_str = f"{resid_j.resname}{resid_j.resnum}"
+
+        # Skip pairs where both residues are the same
+        if res_i_str == res_j_str:
+            continue
+        
         pair_name = f"{res_i_str}({type_i})_{res_j_str}({type_j})"
         
-        data.append([res_i_str, type_i, res_j_str, type_j, pair_name])
+        data.append([res_i_str, type_i, res_j_str, type_j, pair_name, i, j])
     
-    df = pd.DataFrame(data, columns=['residue_i', 'type_i', 'residue_j', 'type_j', 'pair_name'])
+    df = pd.DataFrame(data, columns=['residue_i', 'type_i', 'residue_j', 'type_j', 'pair_name', 'idx_i', 'idx_j'])
     return df
 
 
@@ -232,7 +235,8 @@ def pairs_to_dataframe(pairs, n_mainchain_residues, protein_residues):
 # ---------- Main Processing ---------- #
 
 def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
-                         contact_threshold=8.0, variance_percentile=75, n_jobs=1):
+                         mc_contact_threshold=8.0, sc_contact_threshold=8.0, 
+                         mc_sc_contact_threshold=8.0, variance_percentile=75, n_jobs=1):
     """
     Compute COM residue contact pairs from multiple trajectories.
     Faster version using vectorized MDAnalysis operations and parallel trajectory processing.
@@ -252,7 +256,7 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
         com_mainchain_coords = np.empty((n_frames, n_residues, 3))
         com_sidechain_coords = np.full((n_frames, n_residues, 3), np.nan)  # fill with NaN
 
-        # Vectorized selections
+        # Selections
         mainchain = model.select_atoms(
             "protein and (name N or name CA or name C or name O) and not type H"
         )
@@ -261,17 +265,17 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
         )
 
         # Residue ID mapping (to fill COMs in correct order)
-        residue_ids = protein_residues.resids
-        sidechain_resids = sidechain.residues.resids
-        resid_to_index = {resid: i for i, resid in enumerate(residue_ids)}
+        residue_nums = protein_residues.resnums
+        sidechain_resnums = sidechain.residues.resnums
+        resnum_to_index = {resnum: i for i, resnum in enumerate(residue_nums)}
 
         for idx, ts in enumerate(tqdm(model.trajectory[::stride], desc=os.path.basename(traj))):
             com_mainchain_coords[idx] = mainchain.center_of_mass(compound='residues')
 
-            # Vectorized COMs for sidechains that exist
+            # COMs for sidechains that exist
             sidechain_coms = sidechain.center_of_mass(compound='residues')
-            for sc_resid, com in zip(sidechain_resids, sidechain_coms):
-                j = resid_to_index.get(sc_resid)
+            for sc_resnum, com in zip(sidechain_resnums, sidechain_coms):
+                j = resnum_to_index.get(sc_resnum)
                 if j is not None:
                     com_sidechain_coords[idx, j] = com
 
@@ -297,20 +301,70 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
     # --- Generate pairs ---
 
     all_pairs = list(combinations(range(n_coords), 2))
-    print(f"Total contact pairs: {len(all_pairs)}")
+    #print(f"Total contact pairs: {len(all_pairs)}")
+    mc_start = 0
+    mc_end = n_mainchain_residues
 
+    sc_start = n_mainchain_residues
+    sc_end = n_coords
+
+    # Index ranges
+    mc_indices = range(mc_start, mc_end)
+    sc_indices = range(sc_start, sc_end)
+
+    # --- 1. Mainchain - Mainchain ---
+    mc_mc_pairs = list(combinations(mc_indices, 2))
+    print(f"Mainchain-Mainchain pairs: {len(mc_mc_pairs)}")
+
+    # --- 2. Sidechain - Sidechain ---
+    sc_sc_pairs = list(combinations(sc_indices, 2))
+    print(f"Sidechain-Sidechain pairs: {len(sc_sc_pairs)}")
+
+    # --- 3. Mainchain - Sidechain ---
+    mc_sc_pairs = [(i, j) for i in mc_indices for j in sc_indices]
+    print(f"Mainchain-Sidechain pairs: {len(mc_sc_pairs)}")
 
     # -------- Stage 1: Contact Filter -------- #
-    current_pairs = parallel_batch_filtering(
+    mc_current_pairs = parallel_batch_filtering(
         coords=combined_coords,
-        pairs=all_pairs,
+        pairs=mc_mc_pairs,
         filter_func=filter_by_contact,
         batch_size=batch_size,
         desc="Stage 1: Contact Filter",
         n_jobs=n_jobs,
-        contact_threshold=contact_threshold,
+        contact_threshold=mc_contact_threshold,
     )
-    print(f"Pairs after contact filter: {len(current_pairs):,}")
+    print(f"MC-MC pairs after contact filter: {len(mc_current_pairs):,}")
+
+    sc_current_pairs = parallel_batch_filtering(
+        coords=combined_coords,
+        pairs=sc_sc_pairs,
+        filter_func=filter_by_contact,
+        batch_size=batch_size,
+        desc="Stage 1: Contact Filter",
+        n_jobs=n_jobs,
+        contact_threshold=sc_contact_threshold,
+    )
+    print(f"SC-SC pairs after contact filter: {len(sc_current_pairs):,}")
+
+    mc_sc_current_pairs = parallel_batch_filtering(
+        coords=combined_coords,
+        pairs=mc_sc_pairs,
+        filter_func=filter_by_contact,
+        batch_size=batch_size,
+        desc="Stage 1: Contact Filter",
+        n_jobs=n_jobs,
+        contact_threshold=mc_sc_contact_threshold,
+    )
+    print(f"MC-SC pairs after contact filter: {len(mc_sc_current_pairs):,}")
+
+    current_pairs = (
+    mc_current_pairs
+    + sc_current_pairs
+    + mc_sc_current_pairs
+)
+
+    print(f"Total pairs after Stage 1 (all classes): {len(current_pairs):,}")
 
     # -------- Stage 2: Variance Filter -------- #
     current_pairs = parallel_batch_filtering(
@@ -325,6 +379,92 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
     print(f"Pairs after variance filter: {len(current_pairs):,}")
 
     return all_pairs, current_pairs, combined_coords, n_mainchain_residues
+
+
+def compute_residue_pair_distances(coords, pairs, n_mainchain_residues, protein_residues):
+    """
+    Compute Z-score normalized distances between residue pairs across trajectory frames.
+    Only normalized distances are included in the output.
+
+    Returns a DataFrame with:
+    - pair_name
+    - bond_type
+    - idx_i, idx_j
+    - frame_0 ... frame_N (normalized)
+    - mean_distance, std_distance
+    """
+    n_frames, n_residues, _ = coords.shape
+
+    # Build pair metadata
+    df_pairs = pairs_to_dataframe(pairs, n_mainchain_residues, protein_residues)
+
+    # Define bond type
+    df_pairs["bond_type"] = df_pairs["type_i"] + "-" + df_pairs["type_j"]
+
+    # --- Compute distances ---
+    all_distances = np.empty((len(df_pairs), n_frames))
+    for k, row in df_pairs.iterrows():
+        i, j = int(row["idx_i"]), int(row["idx_j"])
+        diff = coords[:, i, :] - coords[:, j, :]
+        all_distances[k] = np.linalg.norm(diff, axis=1)
+
+    # Compute stats
+    mean_dist = all_distances.mean(axis=1)
+    std_dist = all_distances.std(axis=1)
+    std_dist[std_dist == 0] = np.nan
+
+    # Z-score normalization per pair
+    #norm_distances = (all_distances - mean_dist[:, None]) / std_dist[:, None]
+    norm_distances = all_distances
+    # Build normalized DataFrame
+    frame_cols = [f"frame_{i}" for i in range(n_frames)]
+    df_norm = pd.DataFrame(norm_distances, columns=frame_cols)
+
+    # Combine metadata + normalized distances (only)
+    df_full = pd.concat([df_pairs.reset_index(drop=True)[["pair_name", "bond_type", "idx_i", "idx_j"]], df_norm], axis=1)
+
+    # Add summary stats
+    df_full["mean_distance"] = mean_dist
+    df_full["std_distance"] = std_dist
+
+    return df_full
+
+
+    
+
+# -------- Helper functions for contact type processing -------- #
+
+def remove_duplicate_pairs(current_pairs, protein_residues, n_mainchain_residues):
+    """
+    Keep the first encounter of each unique residue-residue pair (by name + number),
+    regardless of mainchain/sidechain composition.
+    Excludes self-pairs (e.g., VAL495–VAL495).
+    """
+
+    seen = set()
+    unique_pairs = []
+
+    for i, j in current_pairs:
+        res_i = protein_residues[i % n_mainchain_residues]
+        res_j = protein_residues[j % n_mainchain_residues]
+
+        # Build residue identifiers (e.g., VAL495)
+        res_i_name = f"{res_i.resname}{res_i.resnum}"
+        res_j_name = f"{res_j.resname}{res_j.resnum}"
+
+        # Skip self-pairs (same residue name and id)
+        if res_i_name == res_j_name:
+            continue
+
+        # Canonical key ignores order (A_B == B_A)
+        key = "_".join(sorted([res_i_name, res_j_name]))
+
+        if key not in seen:
+            unique_pairs.append((i, j))
+            seen.add(key)
+
+    return unique_pairs
+
 
 def map_combined_to_original(unique_pairs, n_mainchain_residues):
     """
@@ -344,12 +484,9 @@ def map_combined_to_original(unique_pairs, n_mainchain_residues):
         original_pairs.append((orig_i, orig_j))
     return original_pairs
 
+# -------- Contact type processing -------- #
 
-import numpy as np
-import MDAnalysis as mda
-from MDAnalysis.analysis import contacts
-
-def salt_bridge_contact_map_filtered(ref, traj_list, filtered_pairs, distance_threshold=5.0):
+def salt_bridge_contact_map_filtered(ref, traj_list, current_pairs, distance_threshold=6.0):
     """
     Compute salt bridge contact maps for filtered residue pairs over multiple trajectories.
 
@@ -362,40 +499,51 @@ def salt_bridge_contact_map_filtered(ref, traj_list, filtered_pairs, distance_th
     Returns:
         binary_contact_map: (n_pairs, total_frames) binary contact map
         distance_map: (n_pairs, total_frames) salt bridge distances
-        contact_map_names: list of pair labels
+        contact_map_names: numpy array (n_pairs,)
     """
-    # Load first trajectory just to identify salt bridge pairs
+    # Load first trajectory to identify salt bridge pairs
     u_test = mda.Universe(ref, traj_list[0])
 
+    protein_residues = u_test.select_atoms("protein").residues
+    n_mainchain_residues = len(protein_residues)
+
+    unique_pairs = remove_duplicate_pairs(current_pairs, protein_residues, n_mainchain_residues)
+    filtered_pairs = map_combined_to_original(unique_pairs, n_mainchain_residues)
     # Atom selections for salt bridge atoms
     pos_sel = "(resname ARG and name CZ) or (resname LYS and name CE)"
     neg_sel = "(resname ASP and name CG) or (resname GLU and name CD)"
 
-    positive_residues = u_test.select_atoms(pos_sel)
-    negative_residues = u_test.select_atoms(neg_sel)
+    positive_residues = u_test.select_atoms(pos_sel).residues
+    negative_residues = u_test.select_atoms(neg_sel).residues
 
     # Filter the given pairs to only include those where one is positive and one is negative
     sb_pairs = []
-    contact_map_names = []
-    pair_atom_selections = []
+    sb_names_tmp = []
+
     for i, j in filtered_pairs:
         res_i = u_test.residues[i]
         res_j = u_test.residues[j]
-        if ((res_i in positive_residues.residues) and (res_j in negative_residues.residues)) or \
-           ((res_j in positive_residues.residues) and (res_i in negative_residues.residues)):
+
+        if ((res_i in positive_residues and res_j in negative_residues) or
+            (res_j in positive_residues and res_i in negative_residues)):
+
             sb_pairs.append((i, j))
+
             name_i = f"{res_i.resname}{res_i.resid}"
             name_j = f"{res_j.resname}{res_j.resid}"
-            contact_map_names.append(f"{name_i}_{name_j}")
-            atom_i = res_i.atoms.select_atoms(pos_sel if res_i in positive_residues.residues else neg_sel)
-            atom_j = res_j.atoms.select_atoms(pos_sel if res_j in positive_residues.residues else neg_sel)
-            pair_atom_selections.append((atom_i, atom_j))
+            sb_names_tmp.append(f"{name_i}_{name_j}")
 
     if not sb_pairs:
         print("No filtered pairs correspond to possible salt bridges.")
         return None, None, None
 
+    # Preallocate numpy array for names
     n_pairs = len(sb_pairs)
+    max_len = max(len(name) for name in sb_names_tmp)
+    contact_map_names = np.empty(n_pairs, dtype=f'U{max_len}')
+
+    for idx, name in enumerate(sb_names_tmp):
+        contact_map_names[idx] = name
 
     # We'll accumulate results for all trajectories
     binary_contact_maps = []
@@ -404,7 +552,7 @@ def salt_bridge_contact_map_filtered(ref, traj_list, filtered_pairs, distance_th
     for traj in traj_list:
         u = mda.Universe(ref, traj)
 
-        # IMPORTANT: Recreate the selections for this trajectory universe
+        # Recreate the selections for this trajectory universe
         traj_pair_selections = []
         for i, j in sb_pairs:
             res_i = u.residues[i]
@@ -433,10 +581,4 @@ def salt_bridge_contact_map_filtered(ref, traj_list, filtered_pairs, distance_th
     distance_map = np.concatenate(distance_maps, axis=1)
 
     return binary_contact_map, distance_map, contact_map_names
-
-
-
-
-
-
 
