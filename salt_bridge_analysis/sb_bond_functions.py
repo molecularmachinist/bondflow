@@ -216,8 +216,8 @@ def pairs_to_dataframe(pairs, n_mainchain_residues, protein_residues):
         resid_i = protein_residues[i % n_mainchain_residues]
         resid_j = protein_residues[j % n_mainchain_residues]
         
-        res_i_str = f"{resid_i.resname}{resid_i.resnum}"
-        res_j_str = f"{resid_j.resname}{resid_j.resnum}"
+        res_i_str = f"{resid_i.resname}{resid_i.resnum}_{resid_i.resindex}"  # Include resindex
+        res_j_str = f"{resid_j.resname}{resid_j.resnum}_{resid_j.resindex}"  # Include resindex
 
         # Skip pairs where both residues are the same
         if res_i_str == res_j_str:
@@ -229,6 +229,7 @@ def pairs_to_dataframe(pairs, n_mainchain_residues, protein_residues):
     
     df = pd.DataFrame(data, columns=['residue_i', 'type_i', 'residue_j', 'type_j', 'pair_name', 'idx_i', 'idx_j'])
     return df
+
 
 
 
@@ -430,13 +431,13 @@ def compute_residue_pair_distances(coords, pairs, n_mainchain_residues, protein_
     return df_full
 
 
-    
+
 
 # -------- Helper functions for contact type processing -------- #
 
 def remove_duplicate_pairs(current_pairs, protein_residues, n_mainchain_residues):
     """
-    Keep the first encounter of each unique residue-residue pair (by name + number),
+    Keep the first encounter of each unique residue-residue pair (by name + number + index),
     regardless of mainchain/sidechain composition.
     Excludes self-pairs (e.g., VAL495–VAL495).
     """
@@ -448,9 +449,9 @@ def remove_duplicate_pairs(current_pairs, protein_residues, n_mainchain_residues
         res_i = protein_residues[i % n_mainchain_residues]
         res_j = protein_residues[j % n_mainchain_residues]
 
-        # Build residue identifiers (e.g., VAL495)
-        res_i_name = f"{res_i.resname}{res_i.resnum}"
-        res_j_name = f"{res_j.resname}{res_j.resnum}"
+        # Build residue identifiers (e.g., VAL495_0)
+        res_i_name = f"{res_i.resname}{res_i.resnum}_{res_i.resindex}"
+        res_j_name = f"{res_j.resname}{res_j.resnum}_{res_j.resindex}"
 
         # Skip self-pairs (same residue name and id)
         if res_i_name == res_j_name:
@@ -464,6 +465,7 @@ def remove_duplicate_pairs(current_pairs, protein_residues, n_mainchain_residues
             seen.add(key)
 
     return unique_pairs
+
 
 
 def map_combined_to_original(unique_pairs, n_mainchain_residues):
