@@ -185,13 +185,16 @@ def filter_by_variance(batch_distances, batch_pairs, variance_percentile=75):
     threshold = np.percentile(variances, variance_percentile)
     return [pair for pair, keep in zip(batch_pairs, variances >= threshold) if keep]
 
-def filter_by_distribution(distances, pairs, pvalue_threshold=None):
+def filter_by_distribution(coords, pairs, pvalue_threshold=None):
     """Keep residue pairs based on the Lilliefors test p-values."""
     results = []
 
     # Calculate statistics for each pair
     for (i, j) in pairs:
-        distances = distances[:, i, j]  # Assuming distances is structured (n_frames, n_pairs)
+
+        coords_i = coords[:, i, :]
+        coords_j = coords[:, j, :]
+        distances = np.linalg.norm(coords_i - coords_j, axis=1)
         distances = distances[~np.isnan(distances)]
 
         stat, p_value = lilliefors(distances, dist="norm")
@@ -411,14 +414,14 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
 
     # -------- Stage 3: Distribution Filter -------- #
 
-    current_pairs, pairs_pvalue_df = filter_by_distribution(
+    current_pairs, pvalue_df = filter_by_distribution(
         coords = combined_coords, 
         pairs = current_pairs, 
         pvalue_threshold = pvalue_threshold)
 
     print(f"Pairs after distribution filter: {len(current_pairs):,}")
 
-    return all_pairs, current_pairs, combined_coords, n_mainchain_residues
+    return all_pairs, current_pairs, combined_coords, n_mainchain_residues, pvalue_df
 
 
 def compute_residue_pair_distances(coords, pairs, n_mainchain_residues, protein_residues):
