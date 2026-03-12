@@ -266,7 +266,8 @@ def pairs_to_dataframe(pairs, n_mainchain_residues, protein_residues):
 
 def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
                          mc_contact_threshold=8.0, sc_contact_threshold=8.0, 
-                         mc_sc_contact_threshold=8.0, variance_percentile=75, n_jobs=1):
+                         mc_sc_contact_threshold=8.0, variance_percentile=75, pvalue_threshold=None, 
+                         n_jobs=1):
     """
     Compute COM residue contact pairs from multiple trajectories.
     Faster version using vectorized MDAnalysis operations and parallel trajectory processing.
@@ -408,9 +409,14 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
     )
     print(f"Pairs after variance filter: {len(current_pairs):,}")
 
-    # -------- Stage 2: Variance Filter -------- #
+    # -------- Stage 3: Distribution Filter -------- #
 
-    current_pairs, pairs_pvalue_df = filter_by_distribution(combined_coords, current_pairs, pvalue_threshold=None)
+    current_pairs, pairs_pvalue_df = filter_by_distribution(
+        coords = combined_coords, 
+        pairs = current_pairs, 
+        pvalue_threshold = pvalue_threshold)
+
+    print(f"Pairs after distribution filter: {len(current_pairs):,}")
 
     return all_pairs, current_pairs, combined_coords, n_mainchain_residues
 
