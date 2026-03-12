@@ -185,6 +185,35 @@ def filter_by_variance(batch_distances, batch_pairs, variance_percentile=75):
     threshold = np.percentile(variances, variance_percentile)
     return [pair for pair, keep in zip(batch_pairs, variances >= threshold) if keep]
 
+def filter_by_distribution(distances, pairs, pvalue_threshold=None):
+    """Keep residue pairs based on the Lilliefors test p-values."""
+    results = []
+
+    # Calculate statistics for each pair
+    for (i, j) in pairs:
+        distances = distances[:, i, j]  # Assuming distances is structured (n_frames, n_pairs)
+        distances = distances[~np.isnan(distances)]
+
+        stat, p_value = lilliefors(distances, dist="norm")
+        results.append((i, j, stat, p_value))
+
+    # Convert to DataFrame for analysis
+    results_df = pd.DataFrame(results, columns=["pair_i", "pair_j", "stat", "p_values"])
+
+    # Sort the results by p-values
+    results_df = results_df.sort_values("p_values", ascending=True)
+
+    # If threshold provided → filter
+    if pvalue_threshold is not None:
+        filtered_df = results_df[results_df["p_values"] <= pvalue_threshold]
+    else:
+        filtered_df = results_df
+
+    # Convert back to pair list (same format as current_pairs)
+    filtered_pairs = list(zip(filtered_df["pair_i"], filtered_df["pair_j"]))
+
+    return filtered_pairs, results_df.reset_index(drop=True)
+
 
 def parallel_batch_filtering(coords, pairs, filter_func, batch_size, desc, n_jobs=1, **kwargs):
     """Generic parallel batching for any filter function."""
@@ -378,6 +407,10 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
         variance_percentile=variance_percentile,
     )
     print(f"Pairs after variance filter: {len(current_pairs):,}")
+
+    # -------- Stage 2: Variance Filter -------- #
+
+    current_pairs, pairs_pvalue_df = filter_by_distribution(combined_coords, current_pairs, pvalue_threshold=None)
 
     return all_pairs, current_pairs, combined_coords, n_mainchain_residues
 
