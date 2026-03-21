@@ -156,7 +156,8 @@ def create_contact_map_from_dataframe(df):
 
     return contact_map, cols_list
 
-# UUTTA!
+
+
 
 # ---------- Utility Functions ---------- #
 
@@ -167,55 +168,58 @@ def compute_batch_distances(coords, batch_pairs):
     diff = coords[:, i_indices, :] - coords[:, j_indices, :]
     return np.linalg.norm(diff, axis=-1)  # (n_frames, n_pairs)
 
-
 def filter_by_contact(batch_distances, batch_pairs, contact_threshold=8.0):
-    """Keep residue pairs with min distance <= threshold."""
+    """Stage 1: Keep residue pairs with min distance <= threshold."""
     min_distances = np.nanmin(batch_distances, axis=0)
     return [pair for pair, keep in zip(batch_pairs, min_distances <= contact_threshold) if keep]
 
-
-def filter_by_variance(batch_distances, batch_pairs, variance_percentile=75):
-    """Keep residue pairs above the given variance percentile."""
+def score_batch_variance(batch_distances, batch_pairs):
+    """Stage 2: Calculate variances for a batch without filtering yet."""
     min_d = np.nanmin(batch_distances, axis=0)
     max_d = np.nanmax(batch_distances, axis=0)
-    
+    # Normalize to 0-1 to focus on relative movement
     normalized = (batch_distances - min_d) / (max_d - min_d + 1e-8)
     variances = np.nanvar(normalized, axis=0)
+    # Return as list of (pair, variance)
+    return list(zip(batch_pairs, variances))
+
+def parallel_batch_processing(coords, pairs, proc_func, batch_size, desc, n_jobs=1, **kwargs):
+    """Generic parallel orchestrator for both filtering and scoring."""
+    n_batches = (len(pairs) + batch_size - 1) // batch_size
+
+    def process_batch(batch_idx):
+        start, end = batch_idx * batch_size, min((batch_idx + 1) * batch_size, len(pairs))
+        batch_pairs = pairs[start:end]
+        batch_distances = compute_batch_distances(coords, batch_pairs)
+        return proc_func(batch_distances, batch_pairs, **kwargs)
+
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(process_batch)(batch) for batch in tqdm(range(n_batches), desc=desc)
+    )
+    # Flatten the list of lists
+    return [item for sublist in results for item in sublist]
+
+
+def score_batch_distribution(batch_distances, batch_pairs):
+    """Stage 3: Calculate Lilliefors p-values for a batch of pairs."""
+    batch_results = []
     
-    threshold = np.percentile(variances, variance_percentile)
-    return [pair for pair, keep in zip(batch_pairs, variances >= threshold) if keep]
-
-def filter_by_distribution(coords, pairs, pvalue_threshold=None):
-    """Keep residue pairs based on the Lilliefors test p-values."""
-    results = []
-
-    # Calculate statistics for each pair
-    for (i, j) in pairs:
-
-        coords_i = coords[:, i, :]
-        coords_j = coords[:, j, :]
-        distances = np.linalg.norm(coords_i - coords_j, axis=1)
-        distances = distances[~np.isnan(distances)]
-
-        stat, p_value = lilliefors(distances, dist="norm")
-        results.append((i, j, stat, p_value))
-
-    # Convert to DataFrame for analysis
-    results_df = pd.DataFrame(results, columns=["pair_i", "pair_j", "stat", "p_values"])
-
-    # Sort the results by p-values
-    results_df = results_df.sort_values("p_values", ascending=True)
-
-    # If threshold provided → filter
-    if pvalue_threshold is not None:
-        filtered_df = results_df[results_df["p_values"] <= pvalue_threshold]
-    else:
-        filtered_df = results_df
-
-    # Convert back to pair list (same format as current_pairs)
-    filtered_pairs = list(zip(filtered_df["pair_i"], filtered_df["pair_j"]))
-
-    return filtered_pairs, results_df.reset_index(drop=True)
+    # batch_distances shape is (n_frames, n_pairs_in_batch)
+    for idx, (i, j) in enumerate(batch_pairs):
+        distances = batch_distances[:, idx]
+        
+        # Remove NaNs (crucial for sidechains that don't exist in all frames)
+        clean_dist = distances[~np.isnan(distances)]
+        
+        # Lilliefors requires at least 4-5 samples to be mathematically valid
+        if len(clean_dist) < 5:
+            batch_results.append((i, j, np.nan, np.nan))
+            continue
+            
+        stat, p_value = lilliefors(clean_dist, dist="norm")
+        batch_results.append((i, j, stat, p_value))
+        
+    return batch_results
 
 
 def parallel_batch_filtering(coords, pairs, filter_func, batch_size, desc, n_jobs=1, **kwargs):
@@ -401,23 +405,46 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
     print(f"Total pairs after Stage 1 (all classes): {len(current_pairs):,}")
 
     # -------- Stage 2: Variance Filter -------- #
-    current_pairs = parallel_batch_filtering(
-        coords=combined_coords,
-        pairs=current_pairs,
-        filter_func=filter_by_variance,
-        batch_size=batch_size,
-        desc="Stage 2: Variance Filter",
-        n_jobs=n_jobs,
-        variance_percentile=variance_percentile,
+
+    # 1. Collect all variances globally
+    variance_results = parallel_batch_processing(
+        combined_coords, current_pairs, score_batch_variance, 
+        batch_size, "Stage 2: Calculating Variances", n_jobs
     )
+    
+    # 2. Extract values and find global threshold
+    variances = np.array([v for pair, v in variance_results])
+    global_var_threshold = np.percentile(variances, variance_percentile)
+    
+    # 3. Filter list based on global threshold
+    current_pairs = [pair for pair, v in variance_results if v >= global_var_threshold]
+    
     print(f"Pairs after variance filter: {len(current_pairs):,}")
 
     # -------- Stage 3: Distribution Filter -------- #
+    
+    # 1. Collect all stats/p-values in parallel
+    dist_raw_results = parallel_batch_processing(
+        combined_coords, 
+        current_pairs, 
+        score_batch_distribution, 
+        batch_size, 
+        "Stage 3: Calculating Distributions", 
+        n_jobs
+    )
+    
+    # 2. Convert to DataFrame for analysis and sorting
+    pvalue_df = pd.DataFrame(
+        dist_raw_results, 
+        columns=["pair_i", "pair_j", "stat", "p_values"]
+    ).sort_values("p_values", ascending=True).reset_index(drop=True)
 
-    current_pairs, pvalue_df = filter_by_distribution(
-        coords = combined_coords, 
-        pairs = current_pairs, 
-        pvalue_threshold = pvalue_threshold)
+    # 3. Global Filter based on the threshold
+    if pvalue_threshold is not None:
+        filtered_df = pvalue_df[pvalue_df["p_values"] <= pvalue_threshold]
+        current_pairs = list(zip(filtered_df["pair_i"], filtered_df["pair_j"]))
+    else:
+        current_pairs = list(zip(pvalue_df["pair_i"], pvalue_df["pair_j"]))
 
     print(f"Pairs after distribution filter: {len(current_pairs):,}")
 
