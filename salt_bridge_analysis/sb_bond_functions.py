@@ -272,7 +272,7 @@ def pairs_to_dataframe(pairs, n_mainchain_residues, protein_residues):
 # ---------- Main Processing ---------- #
 
 def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
-                         mc_contact_threshold=8.0, sc_contact_threshold=8.0, 
+                         mc_contact_threshold=8.0, sc_contact_threshold=6.0, 
                          mc_sc_contact_threshold=8.0, variance_percentile=75, pvalue_threshold=None, 
                          n_jobs=1):
     """
