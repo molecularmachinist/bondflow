@@ -448,7 +448,29 @@ def compute_com_contacts(trajs, ref, batch_size=100, stride=1,
 
     print(f"Pairs after distribution filter: {len(current_pairs):,}")
 
-    return all_pairs, current_pairs, combined_coords, n_mainchain_residues, pvalue_df
+    # -------- Categorize final filtered pairs -------- #
+    final_mc_mc_pairs = []
+    final_sc_sc_pairs = []
+    final_mc_sc_pairs = []
+
+    for p_i, p_j in current_pairs:
+        is_i_mc = p_i < n_mainchain_residues
+        is_j_mc = p_j < n_mainchain_residues
+
+        if is_i_mc and is_j_mc:
+            final_mc_mc_pairs.append((p_i, p_j))
+        elif not is_i_mc and not is_j_mc:
+            final_sc_sc_pairs.append((p_i, p_j))
+        else: # One is MC, one is SC (order doesn't matter for type)
+            final_mc_sc_pairs.append((p_i, p_j))
+            
+    categorized_contacts = {
+        "mc_mc": final_mc_mc_pairs,
+        "sc_sc": final_sc_sc_pairs,
+        "mc_sc": final_mc_sc_pairs
+    }
+
+    return all_pairs, current_pairs, categorized_contacts, combined_coords, n_mainchain_residues, pvalue_df
 
 
 def compute_residue_pair_distances(coords, pairs, n_mainchain_residues, protein_residues):
@@ -682,13 +704,13 @@ def calculate_angle(atom_donor, atom_hydrogen, atom_acceptor):
     angle_rad = np.arccos(cosine_angle)
     return np.degrees(angle_rad)
 
-def hydrogen_bond_contact_map_filtered(ref, traj_list, current_pairs, distance_threshold=3.1, angle_threshold=30.0):
+def hydrogen_bond_contact_map_filtered(ref, traj_list, categorized_contacts, distance_threshold=3.1, angle_threshold=30.0):
     """
     Compute hydrogen bond contact maps for filtered residue pairs over multiple trajectories.
     Args:
         ref (str): topology file
         traj_list (list[str]): list of trajectory file paths
-        current_pairs (list[tuple]): residue index pairs from earlier filtering
+        categorized_contacts (dict): dictionary of categorized residue pairs
         distance_threshold (float): contact cutoff in Å (common value for hydrogen bonds)
         angle_threshold (float): allowable deviation from 180 degrees in degrees.
         
