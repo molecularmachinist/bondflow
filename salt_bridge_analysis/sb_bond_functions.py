@@ -707,6 +707,7 @@ def calculate_angle(atom_donor, atom_hydrogen, atom_acceptor):
 def hydrogen_bond_contact_map_filtered(ref, traj_list, categorized_contacts, distance_threshold=3.1, angle_threshold=30.0):
     """
     Compute hydrogen bond contact maps for filtered residue pairs over multiple trajectories.
+    
     Args:
         ref (str): topology file
         traj_list (list[str]): list of trajectory file paths
@@ -719,107 +720,126 @@ def hydrogen_bond_contact_map_filtered(ref, traj_list, categorized_contacts, dis
         distance_map: (n_pairs, total_frames) hydrogen bond distances
         contact_map_names: numpy array (n_pairs,)
     """
-
-    # Load first trajectory to identify residue pairs
-    u_test = mda.Universe(ref, traj_list[0])
-    protein_residues = u_test.select_atoms("protein").residues
-    n_mainchain_residues = len(protein_residues)
-
-    # Remove duplicate pairs and map to original indices
-    unique_pairs = remove_duplicate_pairs(current_pairs, protein_residues, n_mainchain_residues)
-    filtered_pairs = map_combined_to_original(unique_pairs, n_mainchain_residues)
-
     # Atom selections for hydrogen bond donor and acceptor atoms
     donor_sel = "(resname ASN or resname SER or resname THR or resname GLN or resname LYS or resname ARG) and (name N or name O)"
     acceptor_sel = "(resname GLU or resname ASP or (resname SER and name O)) or (resname ASN and name O)"
 
-    # Initialize lists for hydrogen bond pairs and names
-    hb_pairs = []
-    hb_names_tmp = []
+    # Initialize lists for results
+    overall_binary_contact_map = []
+    overall_distance_map = []
+    overall_contact_map_names = []
 
-    # Check filtered pairs for donor-acceptor criteria
-    for i, j in filtered_pairs:
-        res_i = u_test.residues[i]
-        res_j = u_test.residues[j]
+    # Process each category of contacts separately
+    for cat, current_pairs in categorized_contacts.items():
+        # Load first trajectory to identify residue pairs
+        u_test = mda.Universe(ref, traj_list[0])
+        protein_residues = u_test.select_atoms("protein").residues
 
-        # Check if one is a donor and the other is an acceptor
-        is_donor_acceptor_pair = (res_i.select_atoms(donor_sel) and res_j.select_atoms(acceptor_sel)) or \
-                                 (res_j.select_atoms(donor_sel) and res_i.select_atoms(acceptor_sel))
+        # Remove duplicate pairs and map to original indices
+        unique_pairs = remove_duplicate_pairs(current_pairs, protein_residues, len(protein_residues))
+        filtered_pairs = map_combined_to_original(unique_pairs, len(protein_residues))
 
-        if is_donor_acceptor_pair:
-            hb_pairs.append((i, j))
+        # Initialize lists for hydrogen bond pairs and names
+        hb_pairs = []
+        hb_names_tmp = []
 
-            name_i = f"{res_i.resname}{res_i.resid}"
-            name_j = f"{res_j.resname}{res_j.resid}"
-            hb_names_tmp.append(f"{name_i}_{name_j}")
+        # Check filtered pairs for donor-acceptor criteria
+        for i, j in filtered_pairs:
+            res_i = u_test.residues[i]
+            res_j = u_test.residues[j]
 
-    if not hb_pairs:
-        print("No filtered pairs correspond to possible hydrogen bonds.")
+            # Check if one is a donor and the other is an acceptor
+            is_donor_acceptor_pair = (res_i.select_atoms(donor_sel) and res_j.select_atoms(acceptor_sel)) or \
+                                     (res_j.select_atoms(donor_sel) and res_i.select_atoms(acceptor_sel))
+
+            if is_donor_acceptor_pair:
+                hb_pairs.append((i, j))
+
+                name_i = f"{res_i.resname}{res_i.resid}"
+                name_j = f"{res_j.resname}{res_j.resid}"
+                hb_names_tmp.append(f"{name_i}_{name_j}")
+
+        # Skip to the next category if no valid pairs found
+        if not hb_pairs:
+            print(f"No filtered pairs correspond to possible hydrogen bonds for category '{cat}'.")
+            continue
+
+        # Create contact map names array
+        n_pairs = len(hb_pairs)
+        max_len = max(len(name) for name in hb_names_tmp)
+        contact_map_names = np.empty(n_pairs, dtype=f'U{max_len}')
+
+        for idx, name in enumerate(hb_names_tmp):
+            contact_map_names[idx] = name
+
+        # We'll accumulate results for each trajectory
+        binary_contact_maps = []
+        distance_maps = []
+
+        for traj in traj_list:
+            u = mda.Universe(ref, traj)
+
+            # Recreate the selections for this trajectory universe
+            traj_pair_selections = []
+            for i, j in hb_pairs:
+                res_i = u.residues[i]
+                res_j = u.residues[j]
+
+                atom_donor = res_i.select_atoms(donor_sel)
+                atom_acceptor = res_j.select_atoms(acceptor_sel)
+
+                # Collect atom selections for hydrogen
+                if atom_donor and atom_acceptor:
+                    for atom_hydrogen in atom_donor.select_atoms("name H"):
+                        traj_pair_selections.append((atom_donor, atom_hydrogen, atom_acceptor))
+
+            n_frames = len(u.trajectory)
+            bin_map = np.zeros((n_pairs, n_frames), dtype=np.int8)
+            dist_map = np.zeros((n_pairs, n_frames))
+
+            # Loop over trajectory frames
+            for ts in u.trajectory:
+                for idx, (atom_donor, atom_hydrogen, atom_acceptor) in enumerate(traj_pair_selections):
+                    dist_matrix = contacts.distance_array(atom_donor.positions, atom_acceptor.positions)
+                    min_dist = np.min(dist_matrix)
+                    dist_map[idx, ts.frame] = min_dist
+
+                    # Only update bin_map if the pair is valid and meets distance requirement
+                    if min_dist <= distance_threshold:
+                        bin_map[idx, ts.frame] = 1  # Indicate valid hydrogen bond
+
+                        # Calculate the angle only if the distance condition is met
+                        angle = calculate_angle(atom_donor[0], atom_hydrogen, atom_acceptor[0])
+                        if not (180 - angle_threshold <= angle <= 180 + angle_threshold):
+                            bin_map[idx, ts.frame] = 0  # Invalidate if angle is not within threshold
+                    else:
+                        bin_map[idx, ts.frame] = 0  # No contact
+
+            # Append results for this trajectory
+            binary_contact_maps.append(bin_map)
+            distance_maps.append(dist_map)
+
+        # Concatenate results across all trajectories for the current category
+        binary_contact_map = np.concatenate(binary_contact_maps, axis=1)
+        distance_map = np.concatenate(distance_maps, axis=1)
+
+        # Filter out pairs that never reach the distance threshold and valid angles
+        valid_indices = np.any(binary_contact_map == 1, axis=1)
+        binary_contact_map = binary_contact_map[valid_indices]
+        distance_map = distance_map[valid_indices]
+        contact_map_names = contact_map_names[valid_indices]
+
+        # Accumulate results for each category
+        overall_binary_contact_map.append(binary_contact_map)
+        overall_distance_map.append(distance_map)
+        overall_contact_map_names.append(contact_map_names)
+
+    # If there are results for each category, concatenate them
+    if overall_binary_contact_map:
+        final_binary_contact_map = np.concatenate(overall_binary_contact_map, axis=0)
+        final_distance_map = np.concatenate(overall_distance_map, axis=0)
+        final_contact_map_names = np.concatenate(overall_contact_map_names)
+
+        return final_binary_contact_map, final_distance_map, final_contact_map_names
+    else:
         return None, None, None
-
-    # Create contact map names array
-    n_pairs = len(hb_pairs)
-    max_len = max(len(name) for name in hb_names_tmp)
-    contact_map_names = np.empty(n_pairs, dtype=f'U{max_len}')
-
-    for idx, name in enumerate(hb_names_tmp):
-        contact_map_names[idx] = name
-
-    # We'll accumulate results for all trajectories
-    binary_contact_maps = []
-    distance_maps = []
-
-    for traj in traj_list:
-        u = mda.Universe(ref, traj)
-
-        # Recreate the selections for this trajectory universe
-        traj_pair_selections = []
-        for i, j in hb_pairs:
-            res_i = u.residues[i]
-            res_j = u.residues[j]
-
-            atom_donor = res_i.select_atoms(donor_sel)
-            atom_acceptor = res_j.select_atoms(acceptor_sel)
-
-            # Collect atom selections for hydrogen
-            if atom_donor and atom_acceptor:
-                for atom_hydrogen in atom_donor.select_atoms("name H"):
-                    traj_pair_selections.append((atom_donor, atom_hydrogen, atom_acceptor))
-
-        n_frames = len(u.trajectory)
-        bin_map = np.zeros((n_pairs, n_frames), dtype=np.int8)
-        dist_map = np.zeros((n_pairs, n_frames))
-
-        # Loop over trajectory frames
-        for ts in u.trajectory:
-            for idx, (atom_donor, atom_hydrogen, atom_acceptor) in enumerate(traj_pair_selections):
-                dist_matrix = contacts.distance_array(atom_donor.positions, atom_acceptor.positions)
-                min_dist = np.min(dist_matrix)
-                dist_map[idx, ts.frame] = min_dist
-
-                # Only update bin_map if the pair is valid and meets distance requirement
-                if min_dist <= distance_threshold:
-                    bin_map[idx, ts.frame] = 1  # Indicate valid hydrogen bond
-                    
-                    # Calculate the angle only if the distance condition is met
-                    angle = calculate_angle(atom_donor[0], atom_hydrogen, atom_acceptor[0])
-                    if not (180 - angle_threshold <= angle <= 180 + angle_threshold):
-                        bin_map[idx, ts.frame] = 0  # Invalidate if angle is not within threshold
-                else:
-                    bin_map[idx, ts.frame] = 0  # No contact
-
-        # Append results for this trajectory
-        binary_contact_maps.append(bin_map)
-        distance_maps.append(dist_map)
-
-    # Concatenate results across all trajectories
-    binary_contact_map = np.concatenate(binary_contact_maps, axis=1)
-    distance_map = np.concatenate(distance_maps, axis=1)
-
-    # Filter out pairs that never reach the distance threshold and valid angles
-    valid_indices = np.any(binary_contact_map == 1, axis=1)
-    binary_contact_map = binary_contact_map[valid_indices]
-    distance_map = distance_map[valid_indices]
-    contact_map_names = contact_map_names[valid_indices]
-
-    return binary_contact_map, distance_map, contact_map_names
