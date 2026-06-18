@@ -704,605 +704,236 @@ def calculate_angle(atom_donor, atom_hydrogen, atom_acceptor):
     angle_rad = np.arccos(cosine_angle)
     return np.degrees(angle_rad)
 
-def hydrogen_bond_contact_map_filtered(ref, traj_list, categorized_contacts, distance_threshold=3.1, angle_threshold=30.0):
-    """
-    Compute hydrogen bond contact maps for filtered residue pairs over multiple trajectories.
-    
-    Args:
-        ref (str): topology file
-        traj_list (list[str]): list of trajectory file paths
-        categorized_contacts (dict): dictionary of categorized residue pairs
-        distance_threshold (float): contact cutoff in Å (common value for hydrogen bonds)
-        angle_threshold (float): allowable deviation from 180 degrees in degrees.
-        
-    Returns:
-        binary_contact_map: (n_pairs, total_frames) binary contact map
-        distance_map: (n_pairs, total_frames) hydrogen bond distances
-        contact_map_names: numpy array (n_pairs,)
-    """
-    # Atom selections for hydrogen bond donor and acceptor atoms
-    donor_sel = "(resname ASN or resname SER or resname THR or resname GLN or resname LYS or resname ARG) and (name N or name O)"
-    acceptor_sel = "(resname GLU or resname ASP or (resname SER and name O)) or (resname ASN and name O)"
 
-    # Initialize lists for results
-    overall_binary_contact_map = []
-    overall_distance_map = []
-    overall_contact_map_names = []
-
-    # Process each category of contacts separately
-    for cat, current_pairs in categorized_contacts.items():
-        # Load first trajectory to identify residue pairs
-        u_test = mda.Universe(ref, traj_list[0])
-        protein_residues = u_test.select_atoms("protein").residues
-
-        # Remove duplicate pairs and map to original indices
-        unique_pairs = remove_duplicate_pairs(current_pairs, protein_residues, len(protein_residues))
-        filtered_pairs = map_combined_to_original(unique_pairs, len(protein_residues))
-
-        # Initialize lists for hydrogen bond pairs and names
-        hb_pairs = []
-        hb_names_tmp = []
-
-        # Check filtered pairs for donor-acceptor criteria
-        for i, j in filtered_pairs:
-            res_i = u_test.residues[i]
-            res_j = u_test.residues[j]
-
-            # Check if one is a donor and the other is an acceptor
-            is_donor_acceptor_pair = (res_i.select_atoms(donor_sel) and res_j.select_atoms(acceptor_sel)) or \
-                                     (res_j.select_atoms(donor_sel) and res_i.select_atoms(acceptor_sel))
-
-            if is_donor_acceptor_pair:
-                hb_pairs.append((i, j))
-
-                name_i = f"{res_i.resname}{res_i.resid}"
-                name_j = f"{res_j.resname}{res_j.resid}"
-                hb_names_tmp.append(f"{name_i}_{name_j}")
-
-        # Skip to the next category if no valid pairs found
-        if not hb_pairs:
-            print(f"No filtered pairs correspond to possible hydrogen bonds for category '{cat}'.")
-            continue
-
-        # Create contact map names array
-        n_pairs = len(hb_pairs)
-        max_len = max(len(name) for name in hb_names_tmp)
-        contact_map_names = np.empty(n_pairs, dtype=f'U{max_len}')
-
-        for idx, name in enumerate(hb_names_tmp):
-            contact_map_names[idx] = name
-
-        # We'll accumulate results for each trajectory
-        binary_contact_maps = []
-        distance_maps = []
-
-        for traj in traj_list:
-            u = mda.Universe(ref, traj)
-
-            # Recreate the selections for this trajectory universe
-            traj_pair_selections = []
-            for i, j in hb_pairs:
-                res_i = u.residues[i]
-                res_j = u.residues[j]
-
-                atom_donor = res_i.select_atoms(donor_sel)
-                atom_acceptor = res_j.select_atoms(acceptor_sel)
-
-                # Collect atom selections for hydrogen
-                if atom_donor and atom_acceptor:
-                    for atom_hydrogen in atom_donor.select_atoms("name H"):
-                        traj_pair_selections.append((atom_donor, atom_hydrogen, atom_acceptor))
-
-            n_frames = len(u.trajectory)
-            bin_map = np.zeros((n_pairs, n_frames), dtype=np.int8)
-            dist_map = np.zeros((n_pairs, n_frames))
-
-            # Loop over trajectory frames
-            for ts in u.trajectory:
-                for idx, (atom_donor, atom_hydrogen, atom_acceptor) in enumerate(traj_pair_selections):
-                    dist_matrix = contacts.distance_array(atom_donor.positions, atom_acceptor.positions)
-                    min_dist = np.min(dist_matrix)
-                    dist_map[idx, ts.frame] = min_dist
-
-                    # Only update bin_map if the pair is valid and meets distance requirement
-                    if min_dist <= distance_threshold:
-                        bin_map[idx, ts.frame] = 1  # Indicate valid hydrogen bond
-
-                        # Calculate the angle only if the distance condition is met
-                        angle = calculate_angle(atom_donor[0], atom_hydrogen, atom_acceptor[0])
-                        if not (180 - angle_threshold <= angle <= 180 + angle_threshold):
-                            bin_map[idx, ts.frame] = 0  # Invalidate if angle is not within threshold
-                    else:
-                        bin_map[idx, ts.frame] = 0  # No contact
-
-            # Append results for this trajectory
-            binary_contact_maps.append(bin_map)
-            distance_maps.append(dist_map)
-
-        # Concatenate results across all trajectories for the current category
-        binary_contact_map = np.concatenate(binary_contact_maps, axis=1)
-        distance_map = np.concatenate(distance_maps, axis=1)
-
-        # Filter out pairs that never reach the distance threshold and valid angles
-        valid_indices = np.any(binary_contact_map == 1, axis=1)
-        binary_contact_map = binary_contact_map[valid_indices]
-        distance_map = distance_map[valid_indices]
-        contact_map_names = contact_map_names[valid_indices]
-
-        # Accumulate results for each category
-        overall_binary_contact_map.append(binary_contact_map)
-        overall_distance_map.append(distance_map)
-        overall_contact_map_names.append(contact_map_names)
-
-    # If there are results for each category, concatenate them
-    if overall_binary_contact_map:
-        final_binary_contact_map = np.concatenate(overall_binary_contact_map, axis=0)
-        final_distance_map = np.concatenate(overall_distance_map, axis=0)
-        final_contact_map_names = np.concatenate(overall_contact_map_names)
-
-        return final_binary_contact_map, final_distance_map, final_contact_map_names
-    else:
-        return None, None, None
 
 def hydrogen_bond_contact_map_filtered(
     ref,
     traj_list,
     categorized_contacts,
-    distance_threshold=2.5,   # H···A distance
-    angle_threshold=30.0      # deviation from 180°
+    distance_threshold=2.5,
+    angle_threshold=30.0
 ):
-    """
-    Hydrogen bond contact maps using chemically accurate:
-
-        H···A distance
-        D-H···A angle
-
-    Hydrogen bond subgroups:
-        - sc-sc
-        - mc-mc
-        - sc-mc
-        - mc-sc
-
-    Optimized for speed:
-        - selections cached once
-        - no repeated select_atoms inside frame loops
-        - no dictionaries in inner loops
-        - uses bonded hydrogens
-        - avoids full donor/acceptor distance matrices
-
-    Returns
-    -------
-    binary_contact_map
-    distance_map
-    contact_map_names
-    """
 
     import numpy as np
     import MDAnalysis as mda
     from MDAnalysis.lib.distances import calc_bonds
 
     # ============================================================
-    # CHEMICALLY CORRECT DEFINITIONS
+    # ATOM DEFINITIONS
     # ============================================================
 
-    #
-    # SIDECHAIN DONORS
-    #
     sc_donor_atoms = {
-        ("SER", "OG"),
-        ("THR", "OG1"),
-        ("TYR", "OH"),
-        ("ASN", "ND2"),
-        ("GLN", "NE2"),
+        ("SER", "OG"), ("THR", "OG1"), ("TYR", "OH"),
+        ("ASN", "ND2"), ("GLN", "NE2"),
         ("LYS", "NZ"),
-        ("ARG", "NE"),
-        ("ARG", "NH1"),
-        ("ARG", "NH2"),
-        ("HIS", "ND1"),
-        ("HIS", "NE2"),
+        ("ARG", "NE"), ("ARG", "NH1"), ("ARG", "NH2"),
+        ("HIS", "ND1"), ("HIS", "NE2"),
         ("TRP", "NE1"),
         ("CYS", "SG"),
     }
 
-    #
-    # SIDECHAIN ACCEPTORS
-    #
     sc_acceptor_atoms = {
-        ("SER", "OG"),
-        ("THR", "OG1"),
-        ("TYR", "OH"),
+        ("SER", "OG"), ("THR", "OG1"), ("TYR", "OH"),
         ("ASN", "OD1"),
         ("GLN", "OE1"),
-        ("ASP", "OD1"),
-        ("ASP", "OD2"),
-        ("GLU", "OE1"),
-        ("GLU", "OE2"),
-        ("HIS", "ND1"),
-        ("HIS", "NE2"),
+        ("ASP", "OD1"), ("ASP", "OD2"),
+        ("GLU", "OE1"), ("GLU", "OE2"),
+        ("HIS", "ND1"), ("HIS", "NE2"),
         ("CYS", "SG"),
     }
 
-    #
-    # MAINCHAIN
-    #
-    mc_donor_atom = "N"
-    mc_acceptor_atom = "O"
+    mc_donor = "N"
+    mc_acceptor = "O"
 
     # ============================================================
-    # ANGLE FUNCTION
+    # ANGLE
     # ============================================================
 
-    def angle_DHA(donor_pos, hydrogen_pos, acceptor_pos):
-
-        v1 = donor_pos - hydrogen_pos
-        v2 = acceptor_pos - hydrogen_pos
-
+    def angle_DHA(D, H, A):
+        v1 = D - H
+        v2 = A - H
         v1 /= np.linalg.norm(v1)
         v2 /= np.linalg.norm(v2)
-
-        cosang = np.dot(v1, v2)
-
-        cosang = np.clip(cosang, -1.0, 1.0)
-
-        return np.degrees(np.arccos(cosang))
+        return np.degrees(np.arccos(np.clip(np.dot(v1, v2), -1.0, 1.0)))
 
     # ============================================================
     # OUTPUT
     # ============================================================
 
-    overall_binary_contact_map = []
-    overall_distance_map = []
-    overall_contact_map_names = []
+    all_bin = []
+    all_dist = []
+    all_names = []
 
     # ============================================================
-    # PROCESS EACH CATEGORY
+    # MAIN LOOP
     # ============================================================
 
     for cat, current_pairs in categorized_contacts.items():
 
         u0 = mda.Universe(ref, traj_list[0])
-
-        protein_residues = u0.select_atoms("protein").residues
+        residues = u0.select_atoms("protein").residues
 
         unique_pairs = remove_duplicate_pairs(
-            current_pairs,
-            protein_residues,
-            len(protein_residues),
+            current_pairs, residues, len(residues)
         )
 
         filtered_pairs = map_combined_to_original(
-            unique_pairs,
-            len(protein_residues),
+            unique_pairs, len(residues)
         )
 
-        #
-        # PRECOMPUTE VALID HBOND TRIPLETS
-        #
-        # (pair_idx, donor, hydrogen, acceptor, subgroup)
-        #
-        validated_triplets = []
-
-        hb_names_tmp = []
+        validated = []
+        pair_map = {}
+        names = []
 
         # ========================================================
-        # BUILD TRIPLETS ONLY ONCE
+        # PRECOMPUTE VALID TRIPLETS
         # ========================================================
 
-        for pair_idx, (i, j) in enumerate(filtered_pairs):
+        for new_idx, (i, j) in enumerate(filtered_pairs):
 
             res_i = u0.residues[i]
             res_j = u0.residues[j]
 
-            pair_has_hbond = False
+            found = False
 
             # ----------------------------------------------------
-            # LOOP OVER BOTH DIRECTIONS
+            # DEFINE DIRECTIONS BY CATEGORY
             # ----------------------------------------------------
 
-            for donor_res, acceptor_res, direction in (
-                (res_i, res_j, "ij"),
-                (res_j, res_i, "ji"),
-            ):
+            if cat == "mc_mc":
 
-                # =================================================
-                # DONOR ATOMS
-                # =================================================
+                directions = [
+                    (res_i, res_j),
+                    (res_j, res_i),
+                ]
 
-                donor_atoms = []
+                def donors(r): return r.atoms.select_atoms(f"name {mc_donor}")
+                def acceptors(r): return r.atoms.select_atoms(f"name {mc_acceptor}")
 
-                #
-                # mainchain donor
-                #
-                donor_atoms.extend(
-                    donor_res.atoms.select_atoms(
-                        f"name {mc_donor_atom}"
-                    )
-                )
+            elif cat == "sc_sc":
 
-                #
-                # sidechain donors
-                #
-                for atom in donor_res.atoms:
+                directions = [
+                    (res_i, res_j),
+                    (res_j, res_i),
+                ]
 
-                    if (
-                        donor_res.resname,
-                        atom.name
-                    ) in sc_donor_atoms:
+                def donors(r):
+                    return [a for a in r.atoms
+                            if (r.resname, a.name) in sc_donor_atoms]
 
-                        donor_atoms.append(atom)
+                def acceptors(r):
+                    return [a for a in r.atoms
+                            if (r.resname, a.name) in sc_acceptor_atoms]
 
-                # =================================================
-                # ACCEPTOR ATOMS
-                # =================================================
+            elif cat == "mc_sc":
 
-                acceptor_atoms = []
+                directions = [
+                    (res_i, res_j),
+                    (res_j, res_i),
+                ]
 
-                #
-                # mainchain acceptor
-                #
-                acceptor_atoms.extend(
-                    acceptor_res.atoms.select_atoms(
-                        f"name {mc_acceptor_atom}"
-                    )
-                )
+                def mc_d(r): return r.atoms.select_atoms(f"name {mc_donor}")
+                def mc_a(r): return r.atoms.select_atoms(f"name {mc_acceptor}")
 
-                #
-                # sidechain acceptors
-                #
-                for atom in acceptor_res.atoms:
+                def sc_d(r):
+                    return [a for a in r.atoms
+                            if (r.resname, a.name) in sc_donor_atoms]
 
-                    if (
-                        acceptor_res.resname,
-                        atom.name
-                    ) in sc_acceptor_atoms:
+                def sc_a(r):
+                    return [a for a in r.atoms
+                            if (r.resname, a.name) in sc_acceptor_atoms]
 
-                        acceptor_atoms.append(atom)
+            else:
+                raise ValueError(cat)
 
-                # =================================================
-                # BUILD TRIPLETS
-                # =================================================
+            # ====================================================
+            # BUILD TRIPLETS
+            # ====================================================
 
-                for donor in donor_atoms:
+            for r1, r2 in directions:
 
-                    #
-                    # Bonded hydrogens only
-                    #
-                    hydrogens = [
-                        a for a in donor.bonded_atoms
-                        if a.element == "H"
-                    ]
+                if cat == "mc_mc":
+                    d_atoms, a_atoms = donors(r1), acceptors(r2)
 
+                elif cat == "sc_sc":
+                    d_atoms, a_atoms = donors(r1), acceptors(r2)
+
+                elif cat == "mc_sc":
+                    d_atoms = list(mc_d(r1)) + list(sc_d(r1))
+                    a_atoms = list(mc_a(r2)) + list(sc_a(r2))
+
+                for d in d_atoms:
+
+                    hydrogens = [h for h in d.bonded_atoms if h.element == "H"]
                     if not hydrogens:
                         continue
 
-                    #
-                    # subgroup classification
-                    #
-                    donor_is_mc = donor.name == "N"
-                    acceptor_is_mc = any(
-                        a.name == "O"
-                        for a in acceptor_atoms
-                    )
+                    for h in hydrogens:
+                        for a in a_atoms:
 
-                    if donor_is_mc and acceptor_is_mc:
-                        subgroup = "mc-mc"
+                            validated.append((new_idx, d, h, a))
+                            found = True
 
-                    elif donor_is_mc and not acceptor_is_mc:
-                        subgroup = "mc-sc"
+            if found:
+                pair_map[new_idx] = len(names)
+                names.append(f"{res_i.resname}{res_i.resid}_{res_j.resname}{res_j.resid}")
 
-                    elif not donor_is_mc and acceptor_is_mc:
-                        subgroup = "sc-mc"
-
-                    else:
-                        subgroup = "sc-sc"
-
-                    #
-                    # build triplets
-                    #
-                    for H in hydrogens:
-
-                        for A in acceptor_atoms:
-
-                            validated_triplets.append(
-                                (
-                                    pair_idx,
-                                    donor,
-                                    H,
-                                    A,
-                                    subgroup,
-                                )
-                            )
-
-                            pair_has_hbond = True
-
-            if pair_has_hbond:
-
-                name_i = f"{res_i.resname}{res_i.resid}"
-                name_j = f"{res_j.resname}{res_j.resid}"
-
-                hb_names_tmp.append(
-                    f"{name_i}_{name_j}"
-                )
-
-        # ========================================================
-        # NO HBONDS
-        # ========================================================
-
-        if not validated_triplets:
-
-            print(
-                f"No hydrogen bonds found for category '{cat}'"
-            )
-
+        if not validated:
+            print(f"No H-bonds for {cat}")
             continue
 
         # ========================================================
-        # CONTACT MAP NAMES
+        # TRAJECTORIES
         # ========================================================
 
-        n_pairs = len(filtered_pairs)
-
-        max_len = max(len(x) for x in hb_names_tmp)
-
-        contact_map_names = np.empty(
-            len(hb_names_tmp),
-            dtype=f"U{max_len}"
-        )
-
-        for idx, name in enumerate(hb_names_tmp):
-            contact_map_names[idx] = name
-
-        # ========================================================
-        # TRAJECTORY LOOP
-        # ========================================================
-
-        binary_contact_maps = []
-        distance_maps = []
+        bin_all = []
+        dist_all = []
 
         for traj in traj_list:
 
             u = mda.Universe(ref, traj)
-
             n_frames = len(u.trajectory)
 
-            bin_map = np.zeros(
-                (n_pairs, n_frames),
-                dtype=np.int8
-            )
-
-            dist_map = np.full(
-                (n_pairs, n_frames),
-                np.inf,
-            )
-
-            # ====================================================
-            # FRAME LOOP
-            # ====================================================
+            bin_map = np.zeros((len(names), n_frames), dtype=np.int8)
+            dist_map = np.full((len(names), n_frames), np.inf)
 
             for ts in u.trajectory:
 
-                for (
-                    pair_idx,
-                    donor,
-                    H,
-                    A,
-                    subgroup,
-                ) in validated_triplets:
+                for pid, d, h, a in validated:
 
-                    #
-                    # H···A distance
-                    #
-                    dist = calc_bonds(
-                        H.position,
-                        A.position,
-                    )[0]
+                    pid = pair_map[pid]
 
-                    #
-                    # Keep minimum distance
-                    #
-                    if dist < dist_map[pair_idx, ts.frame]:
-                        dist_map[pair_idx, ts.frame] = dist
+                    dist = calc_bonds(h.position, a.position)[0]
 
-                    #
-                    # Distance criterion
-                    #
+                    if dist < dist_map[pid, ts.frame]:
+                        dist_map[pid, ts.frame] = dist
+
                     if dist > distance_threshold:
                         continue
 
-                    #
-                    # D-H···A angle
-                    #
-                    angle = angle_DHA(
-                        donor.position,
-                        H.position,
-                        A.position,
-                    )
+                    ang = angle_DHA(d.position, h.position, a.position)
 
-                    #
-                    # Angular criterion
-                    #
-                    if angle >= (180 - angle_threshold):
+                    if ang >= (180 - angle_threshold):
+                        bin_map[pid, ts.frame] = 1
 
-                        bin_map[pair_idx, ts.frame] = 1
-
-            #
-            # replace inf
-            #
             dist_map[np.isinf(dist_map)] = 0.0
 
-            binary_contact_maps.append(bin_map)
-            distance_maps.append(dist_map)
+            bin_all.append(bin_map)
+            dist_all.append(dist_map)
 
-        # ========================================================
-        # CONCATENATE TRAJECTORIES
-        # ========================================================
-
-        binary_contact_map = np.concatenate(
-            binary_contact_maps,
-            axis=1,
-        )
-
-        distance_map = np.concatenate(
-            distance_maps,
-            axis=1,
-        )
-
-        #
-        # Keep only active hbonds
-        #
-        valid_indices = np.any(
-            binary_contact_map == 1,
-            axis=1,
-        )
-
-        binary_contact_map = binary_contact_map[
-            valid_indices
-        ]
-
-        distance_map = distance_map[
-            valid_indices
-        ]
-
-        contact_map_names = contact_map_names[
-            valid_indices
-        ]
-
-        overall_binary_contact_map.append(
-            binary_contact_map
-        )
-
-        overall_distance_map.append(
-            distance_map
-        )
-
-        overall_contact_map_names.append(
-            contact_map_names
-        )
+        all_bin.append(np.concatenate(bin_all, axis=1))
+        all_dist.append(np.concatenate(dist_all, axis=1))
+        all_names.append(np.array(names))
 
     # ============================================================
-    # FINAL CONCATENATION
+    # FINAL OUTPUT
     # ============================================================
 
-    if overall_binary_contact_map:
-
-        final_binary_contact_map = np.concatenate(
-            overall_binary_contact_map,
-            axis=0,
-        )
-
-        final_distance_map = np.concatenate(
-            overall_distance_map,
-            axis=0,
-        )
-
-        final_contact_map_names = np.concatenate(
-            overall_contact_map_names
-        )
-
+    if all_bin:
         return (
-            final_binary_contact_map,
-            final_distance_map,
-            final_contact_map_names,
+            np.concatenate(all_bin, axis=0),
+            np.concatenate(all_dist, axis=0),
+            np.concatenate(all_names),
         )
 
     return None, None, None
