@@ -135,11 +135,19 @@ def optimize_n_components(
         optimal_n_opls_plateau,
     )
 
+def pls_model(X, y, ncomp=3):
+
+    """Fit a PLS model."""
+    return PLSRegression(n_components=ncomp).fit(X, y)
 
 def opls_model(X, y, ncomp=3):
     """Fit an OPLS model."""
     return OPLS_PLS(pls_components=ncomp).fit(X, y)
 
+def compute_opls_shap_values(model, X):
+    """Compute SHAP values for a fitted OPLS model."""
+    explainer = shap.Explainer(model.predict, X)
+    return explainer(X)
 
 def compute_shap_values(model, X):
     """Compute SHAP values for a fitted linear model."""
