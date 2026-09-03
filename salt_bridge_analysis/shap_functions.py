@@ -47,15 +47,11 @@ def optimize_n_components(
         print(f"Building models with {ncomp} components", end="\r")
 
         pls = PLSRegression(n_components=ncomp).fit(X_train, y_train)
-        opls = OPLS_PLS(pls_components=ncomp).fit(X_train, y_train)
 
         data["proj"]["ncomp"].append(ncomp)
 
         data["proj"]["train_scores"].append(pls.score(X_train, y_train))
         data["proj"]["test_scores"].append(pls.score(X_test, y_test))
-
-        data["proj"]["train_scores_opls"].append(opls.score(X_train, y_train))
-        data["proj"]["test_scores_opls"].append(opls.score(X_test, y_test))
 
     print(f"Done! Built models up to {maxcomp} components.")
 
@@ -75,17 +71,6 @@ def optimize_n_components(
         label="PLS Train",
     )
 
-    ax.plot(
-        data["proj"]["ncomp"],
-        data["proj"]["test_scores_opls"],
-        label="OPLS Test",
-    )
-
-    ax.plot(
-        data["proj"]["ncomp"],
-        data["proj"]["train_scores_opls"],
-        label="OPLS Train",
-    )
 
     ax.set_xlabel("Number of Components")
     ax.set_ylabel(r"$R^2$")
@@ -98,9 +83,6 @@ def optimize_n_components(
         np.argmax(data["proj"]["test_scores"])
     ]
 
-    optimal_n_opls = data["proj"]["ncomp"][
-        np.argmax(data["proj"]["test_scores_opls"])
-    ]
 
     def find_plateau_index(scores):
         for i in range(plateau_streak, len(scores)):
@@ -114,7 +96,6 @@ def optimize_n_components(
         return len(scores)
 
     plateau_index_pls = find_plateau_index(data["proj"]["test_scores"])
-    plateau_index_opls = find_plateau_index(data["proj"]["test_scores_opls"])
 
     optimal_n_pls_plateau = (
         data["proj"]["ncomp"][plateau_index_pls - 1]
@@ -122,32 +103,16 @@ def optimize_n_components(
         else optimal_n_pls
     )
 
-    optimal_n_opls_plateau = (
-        data["proj"]["ncomp"][plateau_index_opls - 1]
-        if plateau_index_opls > 0
-        else optimal_n_opls
-    )
 
     return (
         optimal_n_pls,
-        optimal_n_opls,
         optimal_n_pls_plateau,
-        optimal_n_opls_plateau,
     )
 
 def pls_model(X, y, ncomp=3):
 
     """Fit a PLS model."""
     return PLSRegression(n_components=ncomp).fit(X, y)
-
-def opls_model(X, y, ncomp=3):
-    """Fit an OPLS model."""
-    return OPLS_PLS(pls_components=ncomp).fit(X, y)
-
-def compute_opls_shap_values(model, X):
-    """Compute SHAP values for a fitted OPLS model."""
-    explainer = shap.Explainer(model.predict, X)
-    return explainer(X)
 
 def compute_shap_values(model, X):
     """Compute SHAP values for a fitted linear model."""
