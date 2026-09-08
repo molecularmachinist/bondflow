@@ -6,12 +6,13 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.decomposition import PCA
-from sklearn.mixture import BayesianGaussianMixture
+from sklearn.mixture import BayesianGaussianMixture as BGMM
 from OPLS_MD import OPLS, OPLS_PLS, PLS
 
 
 def scale_features(X):
     """Scale features using standard scaling."""
+    X = X.T
     scaler = StandardScaler()
     return scaler.fit_transform(X)
 
@@ -110,19 +111,36 @@ def optimize_n_components(
     )
 
 def pls_model(X, y, ncomp=3):
+    """Fit a PLS model and preserve DataFrame feature names."""
 
-    """Fit a PLS model."""
-    return PLSRegression(n_components=ncomp).fit(X, y)
+    model = PLSRegression(
+        n_components=ncomp
+    ).fit(X, y)
+
+    if hasattr(X, "columns"):
+        model.feature_names = list(X.columns)
+    else:
+        model.feature_names = [
+            f"Feature_{i}"
+            for i in range(X.shape[1])
+        ]
+
+    return model
+
 
 def compute_shap_values(model, X):
     """Compute SHAP values for a fitted linear model."""
     explainer = shap.LinearExplainer(model, X)
-    return explainer.shap_values(X)
+    return explainer(X)
 
 
 def dimensionality_reduction_pca(shap_values, n_comp=5):
 
+    if isinstance(shap_values, shap.Explanation):
+        shap_values = shap_values.values
+
     pca = PCA(n_components=n_comp)
+
     shap_pca = pca.fit_transform(shap_values)
 
     cumulative_variance = np.cumsum(
@@ -138,8 +156,9 @@ def dimensionality_reduction_pca(shap_values, n_comp=5):
     plt.ylabel("Cumulative explained variance")
     plt.ylim(0, 1)
     plt.grid(axis="y")
+    plt.show()
 
-    return shap_pca
+    return shap_pca, pca
 
 
 def cluster_shap_values(
@@ -155,3 +174,92 @@ def cluster_shap_values(
     )
 
     return gmm.fit_predict(shap_pca)
+
+
+def cluster_shap_values(
+    shap_pca,
+    shap_values,
+    feature_names,
+    n_components=4,
+    reg_covar=0.001,
+):
+    """
+    Cluster PCA-reduced SHAP values using a Bayesian Gaussian Mixture Model
+    and compute mean SHAP values for each cluster.
+
+    Parameters
+    ----------
+    shap_pca : array-like
+        PCA-reduced SHAP values, shape (n_samples, n_pca_components).
+
+    shap_values : array-like or shap.Explanation
+        Original SHAP values, shape (n_samples, n_features).
+
+    feature_names : list
+        Names of the original features.
+
+    n_components : int, default=4
+        Number of mixture components/clusters.
+
+    reg_covar : float, default=0.001
+        Non-negative regularization added to the covariance matrices.
+
+    Returns
+    -------
+    gmm : BayesianGaussianMixture
+        Fitted Bayesian Gaussian Mixture model.
+
+    cluster_labels : ndarray
+        Cluster assignment for each observation.
+
+    cluster_means : DataFrame
+        Mean SHAP value for each feature within each cluster.
+    """
+
+    # Extract SHAP values if a SHAP Explanation object was provided
+    if isinstance(shap_values, shap.Explanation):
+        shap_values = shap_values.values
+
+    # Fit Bayesian Gaussian Mixture Model
+    gmm = BGMM(
+        n_components=n_components,
+        reg_covar=reg_covar
+    )
+
+    cluster_labels = gmm.fit_predict(shap_pca)
+
+    # Create DataFrame with original SHAP values
+    shap_df = pd.DataFrame(
+        shap_values,
+        columns=feature_names
+    )
+
+    # Add cluster labels
+    shap_df["Cluster"] = cluster_labels
+
+    # Compute mean SHAP value for each cluster
+    cluster_means = shap_df.groupby("Cluster").mean()
+
+    # Display cluster means
+    print("Mean Feature Values per Cluster:")
+    print(cluster_means)
+
+    # Visualize clusters
+    plt.figure(figsize=(8, 6))
+
+    scatter = plt.scatter(
+        shap_pca[:, 0],
+        shap_pca[:, 1],
+        c=cluster_labels,
+        cmap="tab10",
+        alpha=0.6
+    )
+
+    plt.colorbar(scatter, label="Cluster")
+    plt.xlabel("PCA Component 1")
+    plt.ylabel("PCA Component 2")
+    plt.title("GMM Clustering of SHAP Values (PCA-Reduced)")
+    plt.show()
+
+    return gmm, cluster_labels, cluster_means
+

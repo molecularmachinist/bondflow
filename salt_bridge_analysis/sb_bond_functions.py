@@ -541,8 +541,8 @@ def remove_duplicate_pairs(current_pairs, protein_residues, n_mainchain_residues
         res_j = protein_residues[j % n_mainchain_residues]
 
         # Build residue identifiers (e.g., VAL495_0)
-        res_i_name = f"{res_i.resname}{res_i.resnum}_{res_i.resindex}"
-        res_j_name = f"{res_j.resname}{res_j.resnum}_{res_j.resindex}"
+        res_i_name = f"{res_i.resname}{res_i.resnum}_idx{res_i.resindex}"
+        res_j_name = f"{res_j.resname}{res_j.resnum}_idx{res_j.resindex}"
 
         # Skip self-pairs (same residue name and id)
         if res_i_name == res_j_name:
@@ -624,8 +624,8 @@ def salt_bridge_contact_map_filtered(ref, traj_list, current_pairs, distance_thr
 
             sb_pairs.append((i, j))
 
-            name_i = f"{res_i.resname}{res_i.resid}"
-            name_j = f"{res_j.resname}{res_j.resid}"
+            name_i = f"{res_i.resname}{res_i.resid}_idx{res_i.resindex}"
+            name_j = f"{res_j.resname}{res_j.resid}_idx{res_j.resindex}"
             sb_names_tmp.append(f"{name_i}_{name_j}")
 
     if not sb_pairs:
@@ -937,3 +937,18 @@ def hydrogen_bond_contact_map_filtered(
         )
 
     return None, None, None
+
+
+def create_contact_dataframe(contact_map_names, distance_map):
+    """
+    Create a DataFrame for PLS from contact names and distance data.
+
+    """
+    df = pd.DataFrame(
+    distance_map,
+    columns=contact_map_names
+)
+
+    return df
+
+
