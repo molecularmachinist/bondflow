@@ -168,10 +168,28 @@ def compute_batch_distances(coords, batch_pairs):
     diff = coords[:, i_indices, :] - coords[:, j_indices, :]
     return np.linalg.norm(diff, axis=-1)  # (n_frames, n_pairs)
 
+
 def filter_by_contact(batch_distances, batch_pairs, contact_threshold=8.0):
     """Stage 1: Keep residue pairs with min distance <= threshold."""
-    min_distances = np.nanmin(batch_distances, axis=0)
-    return [pair for pair, keep in zip(batch_pairs, min_distances <= contact_threshold) if keep]
+
+    # Pair is valid only if there are NO NaNs in any framem meaning they have sidechains
+    valid_pairs = np.all(np.isfinite(batch_distances), axis=0)
+
+    # Calculate minimum only for completely valid pairs
+    min_distances = np.full(batch_distances.shape[1], np.nan)
+
+    min_distances[valid_pairs] = np.min(
+        batch_distances[:, valid_pairs],
+        axis=0
+    )
+
+    return [
+        pair
+        for pair, keep in zip(
+            batch_pairs,
+            valid_pairs & (min_distances <= contact_threshold)
+        )
+        if keep]
 
 def score_batch_variance(batch_distances, batch_pairs):
     """Stage 2: Calculate variances for a batch without filtering yet."""
