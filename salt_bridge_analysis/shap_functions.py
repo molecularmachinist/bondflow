@@ -7,7 +7,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.decomposition import PCA
 from sklearn.mixture import BayesianGaussianMixture as BGMM
-from OPLS_MD import OPLS, OPLS_PLS, PLS
 
 
 def scale_features(X):
