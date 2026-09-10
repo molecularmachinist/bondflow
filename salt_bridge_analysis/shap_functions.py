@@ -133,7 +133,7 @@ def compute_shap_values(model, X):
     return explainer(X)
 
 
-def dimensionality_reduction_pca(shap_values, n_comp=5):
+def dimensionality_reduction_pca(shap_values, n_comp=2):
 
     if isinstance(shap_values, shap.Explanation):
         shap_values = shap_values.values
