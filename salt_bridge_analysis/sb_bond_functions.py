@@ -2,9 +2,11 @@
 
 import MDAnalysis as mda
 import numpy as np
-from MDAnalysis.analysis import contacts
+import matplotlib.pyplot as plt
 import pandas as pd
 import os
+import seaborn as sns
+from MDAnalysis.analysis import contacts
 from tqdm import tqdm
 from itertools import combinations, product
 from joblib import Parallel, delayed
@@ -970,3 +972,43 @@ def create_contact_dataframe(contact_map_names, distance_map):
     return df
 
 
+#Plotting
+
+def plot_salt_bridge_distributions(df, bins=30, col_wrap=4, xlim_min = 0, xlim_max = 35):
+
+    salt_bridges = df.columns
+
+    n_bridges = len(salt_bridges)
+    n_cols = col_wrap
+    n_rows = int(np.ceil(n_bridges / n_cols))
+
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(4 * n_cols, 3.5 * n_rows),
+        squeeze=False
+    )
+
+    axes = axes.flatten()
+
+    for i, salt_bridge in enumerate(salt_bridges):
+
+        sns.histplot(
+            df[salt_bridge].dropna(),
+            bins=bins,
+            kde=True,
+            ax=axes[i]
+        )
+
+        axes[i].set_title(salt_bridge)
+        axes[i].set_xlabel("Distance")
+        axes[i].set_ylabel("Count")
+        axes[i].set_xlim(xlim_min,xlim_max)
+        
+
+    # Remove unused axes
+    for i in range(n_bridges, len(axes)):
+        axes[i].remove()
+
+    plt.tight_layout()
+    plt.show()
