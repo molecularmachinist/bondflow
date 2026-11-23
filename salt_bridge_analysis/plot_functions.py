@@ -7,6 +7,52 @@ import seaborn as sns
 
 sns.set(style="whitegrid")
 
+def plot_salt_bridge_distributions(df, bins=30, col_wrap=4, xlim_min = 0, xlim_max = 35, show=False):
+
+    salt_bridges = df.columns
+
+    n_bridges = len(salt_bridges)
+    n_cols = col_wrap
+    n_rows = int(np.ceil(n_bridges / n_cols))
+
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(4 * n_cols, 3.5 * n_rows),
+        squeeze=False
+    )
+
+    axes = axes.flatten()
+
+    for i, salt_bridge in enumerate(salt_bridges):
+
+        sns.histplot(
+            df[salt_bridge].dropna(),
+            bins=bins,
+            kde=True,
+            ax=axes[i]
+        )
+
+        axes[i].set_title(salt_bridge)
+        axes[i].set_xlabel("Distance")
+        axes[i].set_ylabel("Count")
+        axes[i].set_xlim(xlim_min,xlim_max)
+        
+
+    # Remove unused axes
+    for i in range(n_bridges, len(axes)):
+        axes[i].remove()
+
+    fig.tight_layout()
+
+    if show:
+        plt.show()
+
+    else:
+        plt.close(fig)
+
+    return fig
+
 def plot_summary_bars_from_subset(
     subset_df,
     stat="mean",
@@ -15,6 +61,7 @@ def plot_summary_bars_from_subset(
     top_n=20,
     title=None,
     figsize=None,
+    show=False,
 ):
     """Plot absolute central SHAP values for interactions in a selected dataframe."""
 
@@ -87,7 +134,16 @@ def plot_summary_bars_from_subset(
 
     ax.set_title(title)
     ax.legend()
+
     fig.tight_layout()
+
+    if show:
+        plt.show()
+    
+    else:
+        plt.close(fig)
+    
+    return fig
    
 
 def plot_distributions_from_subset(
@@ -102,6 +158,7 @@ def plot_distributions_from_subset(
     use_abs=False,
     ncols=3,
     bw_adjust=1.0,
+    show=False,
 ):
     """Plot SHAP distributions for interactions listed in subset_df."""
 
@@ -204,6 +261,14 @@ def plot_distributions_from_subset(
         ax.set_visible(False)
 
     fig.tight_layout()
+
+    if show:
+        plt.show()
+    
+    else:
+        plt.close(fig)
+
+    return fig
     
 
 
@@ -544,6 +609,7 @@ def plot_all_interaction_views(
     joint_bins=30,
     joint_cmap="viridis",
     share_axes=True,
+    show=False,
 ):
     """
     Creates one unified dashboard figure per selected interaction using a single DataFrame `df`:
@@ -690,7 +756,12 @@ def plot_all_interaction_views(
             main_title += f" | Trajectory: {trajectory}"
         fig.suptitle(main_title, fontsize=16, fontweight="bold", y=0.98)
 
-        plt.show()
+        if show:
+            plt.show()
+        
+        else:
+            plt.close(fig)
+        
         figures[interaction] = fig
 
     return figures
