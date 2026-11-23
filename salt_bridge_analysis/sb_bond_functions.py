@@ -8,7 +8,7 @@ import os
 import seaborn as sns
 from MDAnalysis.analysis import contacts
 from tqdm import tqdm
-from itertools import combinations, product
+from itertools import combinations
 from joblib import Parallel, delayed
 from itertools import combinations
 from statsmodels.stats.diagnostic import lilliefors

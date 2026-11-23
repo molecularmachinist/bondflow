@@ -1,12 +1,11 @@
+
 import numpy as np
 import matplotlib.pyplot as plt
 import shap
-import MDAnalysis as mda
 import pandas as pd
 import numpy as np
-import seaborn as sns
 import matplotlib.pyplot as plt
-import math
+
 
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
@@ -14,10 +13,8 @@ from sklearn.cross_decomposition import PLSRegression
 from sklearn.decomposition import PCA
 from sklearn.mixture import BayesianGaussianMixture as BGMM
 from sklearn.decomposition import PCA
-from sklearn.linear_model import LinearRegression
-from scipy.stats import pearsonr
 from scipy.stats import mannwhitneyu
-from statsmodels.stats.diagnostic import lilliefors
+
 
 
 def scale_features(X):
@@ -310,30 +307,49 @@ def cluster_shap(
 
     return gmm, cluster_labels, df
 
+
 def summarize_interactions_by_cluster(
     df,
     value_col="SHAP Value",
     cluster_col="Cluster",
     interaction_col="Interaction",
     clusters=(0, 1),
-    stat="median",
+    stat="mean",
+    near_zero_threshold=0.05,
     mannwhitney=True,
 ):
     """
-    Build summary statistics per interaction for two clusters.
+    Summarize SHAP values for each interaction in two clusters.
 
-    Adds ordering columns for:
-    1. interactions high in both clusters
-    2. interactions with largest change in absolute central value
+    Flags interactions where exactly one cluster's central SHAP value
+    (mean or median) is near zero and the other cluster's value is farther
+    from zero.
+
+    The absolute signed difference can be used to rank these interactions
+    regardless of whether the change is positive or negative.
     """
 
-    if stat not in ["mean", "median"]:
+    if stat not in {"mean", "median"}:
         raise ValueError("stat must be 'mean' or 'median'")
 
-    c0, c1 = clusters
+    if len(clusters) != 2:
+        raise ValueError("Exactly two cluster labels must be provided.")
 
+    if near_zero_threshold < 0:
+        raise ValueError("near_zero_threshold must be non-negative.")
+
+    required_cols = {value_col, cluster_col, interaction_col}
+    missing = required_cols.difference(df.columns)
+    if missing:
+        raise ValueError(f"Missing columns in df: {sorted(missing)}")
+
+    c0, c1 = clusters
     d = df[df[cluster_col].isin(clusters)].copy()
 
+    if d.empty:
+        raise ValueError("No rows found for the requested clusters.")
+
+    # Calculate statistics for each interaction within each cluster
     summary = (
         d.groupby([interaction_col, cluster_col], observed=True)[value_col]
         .agg(
@@ -347,6 +363,7 @@ def summarize_interactions_by_cluster(
         .unstack(cluster_col)
     )
 
+    # Flatten multi-level column names, e.g. mean, cluster 0 -> mean_c0
     summary.columns = [
         f"{metric}_c{cluster}"
         for metric, cluster in summary.columns
@@ -358,42 +375,41 @@ def summarize_interactions_by_cluster(
     s1 = f"{stat}_c{c1}"
 
     if s0 not in summary.columns or s1 not in summary.columns:
-        raise ValueError("One or both requested clusters are missing.")
+        raise ValueError(
+            "Could not find statistics for both requested clusters. "
+            "Check the cluster labels in the dataframe."
+        )
 
-    # Signed difference
-    summary[f"{stat}_diff_c{c1}_minus_c{c0}"] = summary[s1] - summary[s0]
-    summary[f"abs_signed_{stat}_diff"] = summary[
-        f"{stat}_diff_c{c1}_minus_c{c0}"
-    ].abs()
+    # Signed difference: cluster 1 minus cluster 0
+    change_col = f"{stat}_diff_c{c1}_minus_c{c0}"
+    summary[change_col] = summary[s1] - summary[s0]
 
-    # Absolute central values per cluster
-    summary[f"abs_{stat}_c{c0}"] = summary[s0].abs()
-    summary[f"abs_{stat}_c{c1}"] = summary[s1].abs()
+    # Absolute size of the signed difference, ignoring direction
+    summary[f"abs_{stat}_diff"] = summary[change_col].abs()
 
-    # How high both clusters are
-    # Large value means both clusters have high absolute mean/median.
-    summary[f"both_high_{stat}_score"] = summary[
-        [f"abs_{stat}_c{c0}", f"abs_{stat}_c{c1}"]
-    ].min(axis=1)
+    # Absolute central values in each cluster
+    abs0_col = f"abs_{stat}_c{c0}"
+    abs1_col = f"abs_{stat}_c{c1}"
+    summary[abs0_col] = summary[s0].abs()
+    summary[abs1_col] = summary[s1].abs()
 
-    # Maximum absolute value in either cluster
-    summary[f"max_abs_{stat}"] = summary[
-        [f"abs_{stat}_c{c0}", f"abs_{stat}_c{c1}"]
-    ].max(axis=1)
+    near0 = summary[abs0_col] <= near_zero_threshold
+    near1 = summary[abs1_col] <= near_zero_threshold
 
-    # Change between absolute values
-    # Large value means one cluster has much larger absolute mean/median than the other.
-    summary[f"abs_{stat}_change"] = (
-        summary[f"abs_{stat}_c{c1}"] - summary[f"abs_{stat}_c{c0}"]
-    ).abs()
+    # True only when one cluster is near zero and the other is not
+    summary["near_zero_one_cluster"] = near0 ^ near1
 
-    # Direction of larger absolute value
-    summary["larger_abs_cluster"] = np.where(
-        summary[f"abs_{stat}_c{c1}"] > summary[f"abs_{stat}_c{c0}"],
-        c1,
-        c0,
-    )
+    # Record which cluster is near zero and which has the larger magnitude
+    summary["near_zero_cluster"] = np.nan
+    summary["higher_magnitude_cluster"] = np.nan
 
+    summary.loc[near0 & ~near1, "near_zero_cluster"] = c0
+    summary.loc[near0 & ~near1, "higher_magnitude_cluster"] = c1
+
+    summary.loc[near1 & ~near0, "near_zero_cluster"] = c1
+    summary.loc[near1 & ~near0, "higher_magnitude_cluster"] = c0
+
+    # Optional Mann–Whitney U test comparing the SHAP-value distributions
     if mannwhitney:
         pvals = []
 
@@ -402,282 +418,219 @@ def summarize_interactions_by_cluster(
             v1 = sub.loc[sub[cluster_col] == c1, value_col].dropna()
 
             if len(v0) > 0 and len(v1) > 0:
-                p = mannwhitneyu(v0, v1, alternative="two-sided").pvalue
+                p_value = mannwhitneyu(
+                    v0,
+                    v1,
+                    alternative="two-sided"
+                ).pvalue
             else:
-                p = np.nan
+                p_value = np.nan
 
-            pvals.append((interaction, p))
+            pvals.append((interaction, p_value))
 
         pval_df = pd.DataFrame(
             pvals,
             columns=[interaction_col, "mannwhitney_p"]
         )
 
-        summary = summary.merge(pval_df, on=interaction_col, how="left")
+        summary = summary.merge(
+            pval_df,
+            on=interaction_col,
+            how="left"
+        )
 
     return summary
+
 
 def order_summary(
     stats_df,
     stat="mean",
     order_by="both_high",
-    interaction_col="Interaction",
-):
-    """
-    order_by options:
-    - "both_high": interactions high in both clusters
-    - "abs_change": largest change between absolute cluster stats
-    """
-
-    if order_by == "both_high":
-        sort_cols = [f"both_high_{stat}_score", f"max_abs_{stat}"]
-        ascending = [False, False]
-
-    elif order_by == "abs_change":
-        sort_cols = [f"abs_{stat}_change", f"max_abs_{stat}"]
-        ascending = [False, False]
-
-    else:
-        raise ValueError("order_by must be 'both_high' or 'abs_change'")
-
-    missing = [c for c in sort_cols if c not in stats_df.columns]
-    if missing:
-        raise ValueError(f"Missing columns in stats_df: {missing}")
-
-    return stats_df.sort_values(sort_cols, ascending=ascending).copy()
-
-
-def plot_summary_bars(
-    stats_df,
-    stat="mean",
     clusters=(0, 1),
-    order_by="both_high",
-    top_n=20,
     interaction_col="Interaction",
-    title=None,
-    figsize=None,
+    high_threshold=None,
 ):
     """
-    Bar plot using summary statistics only.
+    Order interaction summaries.
 
-    Bars = abs(mean/median) per cluster.
-    Marker color = sign of signed mean/median.
+    order_by:
+      - "both_high": high absolute central values in both clusters;
+        score is the smaller of the two absolute values.
+      - "near_zero_change": exactly one cluster is near zero;
+        rank by the absolute signed difference between clusters.
     """
-
     c0, c1 = clusters
-
-    signed0_col = f"{stat}_c{c0}"
-    signed1_col = f"{stat}_c{c1}"
     abs0_col = f"abs_{stat}_c{c0}"
     abs1_col = f"abs_{stat}_c{c1}"
+    change_col = f"{stat}_diff_c{c1}_minus_c{c0}"
+    abs_change_col = f"abs_{stat}_diff"
 
-    needed = [signed0_col, signed1_col, abs0_col, abs1_col, interaction_col]
-    missing = [c for c in needed if c not in stats_df.columns]
-
+    required = [interaction_col, abs0_col, abs1_col]
+    missing = [col for col in required if col not in stats_df.columns]
     if missing:
         raise ValueError(f"Missing columns in stats_df: {missing}")
 
-    plot_df = (
-        order_summary(
-            stats_df,
-            stat=stat,
-            order_by=order_by,
-            interaction_col=interaction_col,
+    result = stats_df.copy()
+
+    if order_by == "both_high":
+        # Both clusters must have a high absolute central value.
+        result[f"both_high_{stat}_score"] = result[
+            [abs0_col, abs1_col]
+        ].min(axis=1)
+
+        result[f"max_abs_{stat}"] = result[
+            [abs0_col, abs1_col]
+        ].max(axis=1)
+
+        if high_threshold is not None:
+            result = result[
+                result[f"both_high_{stat}_score"] >= high_threshold
+            ]
+
+        return result.sort_values(
+            [f"both_high_{stat}_score", f"max_abs_{stat}"],
+            ascending=[False, False],
         )
-        .head(top_n)
+
+    elif order_by == "near_zero_change":
+        if "near_zero_one_cluster" not in result.columns:
+            raise ValueError(
+                "The summary dataframe needs a 'near_zero_one_cluster' "
+                "column. Create it with summarize_interactions_by_cluster."
+            )
+
+        if abs_change_col not in result.columns:
+            if change_col not in result.columns:
+                raise ValueError(
+                    f"Need '{change_col}' or '{abs_change_col}' in stats_df."
+                )
+            result[abs_change_col] = result[change_col].abs()
+
+        result = result[result["near_zero_one_cluster"]].copy()
+
+        return result.sort_values(
+            abs_change_col,
+            ascending=False,
+        )
+
+    else:
+        raise ValueError(
+            "order_by must be 'both_high' or 'near_zero_change'"
+        )
+
+def split_interactions_by_cluster(
+    shap_stats,
+    clusters=(0, 1),
+    stat="mean",
+    high_quantile=0.90,
+    interaction_col="Interaction",
+    show=True,
+    top_n=20,
+):
+    """
+    Add both-high scores to shap_stats and create two ordered dataframes:
+
+    1. both_high_ordered:
+       Interactions in the top `high_quantile` fraction for which both
+       clusters have large absolute central SHAP values.
+
+    2. near_zero_ordered:
+       Interactions whose central value is near zero in exactly one cluster,
+       ordered by the absolute signed difference between clusters.
+
+    Returns
+    -------
+    shap_stats : pandas.DataFrame
+        Copy of the input summary with both-high score columns added.
+    both_high_ordered : pandas.DataFrame
+        Both-high interactions, ordered by both-high score.
+    near_zero_ordered : pandas.DataFrame
+        Near-zero interactions, ordered by absolute cluster difference.
+    high_threshold : float
+        Quantile cutoff applied to the both-high score.
+    """
+
+    if stat not in {"mean", "median"}:
+        raise ValueError("stat must be 'mean' or 'median'")
+
+    if len(clusters) != 2:
+        raise ValueError("Provide exactly two cluster labels.")
+
+    if not 0 <= high_quantile <= 1:
+        raise ValueError("high_quantile must be between 0 and 1.")
+
+    c0, c1 = clusters
+    result = shap_stats.copy()
+
+    abs0 = f"abs_{stat}_c{c0}"
+    abs1 = f"abs_{stat}_c{c1}"
+    both_high_score = f"both_high_{stat}_score"
+    max_abs_score = f"max_abs_{stat}"
+    abs_difference = f"abs_{stat}_diff"
+
+    required = [
+        interaction_col,
+        abs0,
+        abs1,
+        "near_zero_one_cluster",
+        abs_difference,
+    ]
+    missing = [col for col in required if col not in result.columns]
+    if missing:
+        raise ValueError(
+            f"Missing columns in shap_stats: {missing}. "
+            "Check that summarize_interactions_by_cluster was run with "
+            "the same clusters and stat."
+        )
+
+    # A high score means both clusters have relatively large magnitudes.
+    result[both_high_score] = result[[abs0, abs1]].min(axis=1)
+
+    # Largest absolute central value in either cluster.
+    result[max_abs_score] = result[[abs0, abs1]].max(axis=1)
+
+    # Determine the top-quantile cutoff for the both-high score.
+    valid_scores = result[both_high_score].dropna()
+    if valid_scores.empty:
+        raise ValueError("No valid central-value scores are available.")
+
+    high_threshold = valid_scores.quantile(high_quantile)
+
+    both_high_ordered = (
+        result.loc[result[both_high_score] >= high_threshold]
+        .sort_values(
+            [both_high_score, max_abs_score],
+            ascending=[False, False],
+        )
         .copy()
     )
 
-    if plot_df.empty:
-        print("No interactions to plot.")
-        return None
-
-    labels = plot_df[interaction_col].astype(str).to_numpy()
-
-    abs0 = plot_df[abs0_col].to_numpy()
-    abs1 = plot_df[abs1_col].to_numpy()
-    signed0 = plot_df[signed0_col].to_numpy()
-    signed1 = plot_df[signed1_col].to_numpy()
-
-    y = np.arange(len(plot_df))
-    height = 0.38
-
-    if figsize is None:
-        figsize = (9, max(4, 0.45 * len(plot_df)))
-
-    fig, ax = plt.subplots(figsize=figsize)
-
-    ax.barh(
-        y - height / 2,
-        abs0,
-        height=height,
-        color="C0",
-        alpha=0.7,
-        label=f"Cluster {c0}",
+    # Keep interactions flagged as near zero in exactly one cluster.
+    # Rank by absolute signed difference, ignoring direction.
+    near_zero_ordered = (
+        result.loc[result["near_zero_one_cluster"]]
+        .sort_values(abs_difference, ascending=False)
+        .copy()
     )
 
-    ax.barh(
-        y + height / 2,
-        abs1,
-        height=height,
-        color="C1",
-        alpha=0.7,
-        label=f"Cluster {c1}",
-    )
+    if show:
+        print(
+            f"Both-high threshold "
+            f"(quantile={high_quantile:.0%}): {high_threshold:.4g}"
+        )
+        print(f"Interactions high in both clusters: {len(both_high_ordered)}")
+        print(f"Interactions near zero in one cluster: {len(near_zero_ordered)}")
 
-    for i in range(len(plot_df)):
-        if not np.isnan(signed0[i]):
-            color0 = "red" if signed0[i] > 0 else "blue"
-            ax.scatter(
-                abs(signed0[i]),
-                y[i] - height / 2,
-                color=color0,
-                edgecolor="black",
-                zorder=5,
-            )
+        try:
+            from IPython.display import display
+            display(both_high_ordered.head(top_n))
+            display(near_zero_ordered.head(top_n))
+        except ImportError:
+            print("\nBoth-high interactions:")
+            print(both_high_ordered.head(top_n).to_string(index=False))
+            print("\nNear-zero interactions:")
+            print(near_zero_ordered.head(top_n).to_string(index=False))
 
-        if not np.isnan(signed1[i]):
-            color1 = "red" if signed1[i] > 0 else "blue"
-            ax.scatter(
-                abs(signed1[i]),
-                y[i] + height / 2,
-                color=color1,
-                edgecolor="black",
-                zorder=5,
-            )
+    return result, both_high_ordered, near_zero_ordered, high_threshold
 
-    ax.set_yticks(y)
-    ax.set_yticklabels(labels)
-    ax.invert_yaxis()
 
-    ax.set_xlabel(f"abs({stat})")
-    ax.set_ylabel("Interaction")
-
-    if title is None:
-        title = f"Top {top_n} interactions ordered by {order_by}"
-
-    ax.set_title(title)
-    ax.legend()
-
-    plt.tight_layout()
-
-    return fig
-
-def plot_top_distributions(
-    df,
-    stats_df,
-    value_col="SHAP Value",
-    stat="mean",
-    clusters=(0, 1),
-    order_by="both_high",
-    top_n=9,
-    interaction_col="Interaction",
-    cluster_col="Cluster",
-    kind="kde",
-    use_abs=False,
-    ncols=3,
-    bw_adjust=1,
-    figsize=None,
-):
-    """
-    Plot KDEs or histograms for top interactions.
-
-    stats_df decides the ordering.
-    df provides the raw per-frame values.
-    """
-
-    ordered_stats = order_summary(
-        stats_df,
-        stat=stat,
-        order_by=order_by,
-        interaction_col=interaction_col,
-    )
-
-    interactions = ordered_stats[interaction_col].head(top_n).tolist()
-
-    if len(interactions) == 0:
-        print("No interactions to plot.")
-        return None
-
-    plot_df = df[
-        df[interaction_col].isin(interactions)
-        & df[cluster_col].isin(clusters)
-    ].copy()
-
-    if use_abs:
-        plot_df["_plot_value"] = plot_df[value_col].abs()
-        x_col = "_plot_value"
-        x_label = f"abs({value_col})"
-    else:
-        x_col = value_col
-        x_label = value_col
-
-    n = len(interactions)
-    ncols = max(1, int(ncols))
-    nrows = int(np.ceil(n / ncols))
-
-    if figsize is None:
-        figsize = (4 * ncols, 3 * nrows)
-
-    fig, axes = plt.subplots(
-        nrows=nrows,
-        ncols=ncols,
-        figsize=figsize,
-        squeeze=False,
-    )
-
-    axes = axes.flatten()
-
-    for i, interaction in enumerate(interactions):
-        ax = axes[i]
-
-        sub = plot_df[plot_df[interaction_col] == interaction]
-
-        for j, cluster in enumerate(clusters):
-            vals = sub.loc[sub[cluster_col] == cluster, x_col].dropna()
-
-            if kind == "kde":
-                if len(vals) > 1:
-                    sns.kdeplot(
-                        x=vals,
-                        ax=ax,
-                        label=f"Cluster {cluster}",
-                        color=f"C{j}",
-                        bw_adjust=bw_adjust,
-                    )
-
-            elif kind == "hist":
-                if len(vals) > 0:
-                    sns.histplot(
-                        x=vals,
-                        ax=ax,
-                        label=f"Cluster {cluster}",
-                        color=f"C{j}",
-                        stat="density",
-                        bins=30,
-                        alpha=0.45,
-                    )
-
-            else:
-                raise ValueError("kind must be 'kde' or 'hist'")
-
-            if len(vals) > 0:
-                ax.axvline(
-                    np.mean(vals),
-                    color=f"C{j}",
-                    linestyle="--",
-                    alpha=0.8,
-                )
-
-        ax.set_title(str(interaction))
-        ax.set_xlabel(x_label)
-
-        if i == 0:
-            ax.legend()
-
-    for j in range(n, len(axes)):
-        axes[j].set_visible(False)
-
-    plt.tight_layout()
-
-    return fig
